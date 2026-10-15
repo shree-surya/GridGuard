@@ -8,7 +8,7 @@ ESP32 38-pin DevKit (board "ESP32 Dev Module"). All grounds are one common GND.
 |---|---|---|
 | VIN | 5 V rail (Hi-Link +Vo) | no series diode |
 | GND | GND rail | |
-| 3V3 | TFT VCC, TFT BLK, TTP223 VCC | |
+| 3V3 | TFT VCC, TFT BLK | |
 | GPIO34 | voltage divider node (ZMPT101B OUT) | input only, ADC1 |
 | GPIO35 | voltage divider node (ACS712 OUT) | input only, ADC1 |
 | GPIO18 | TFT SCK | SPI clock |
@@ -16,7 +16,7 @@ ESP32 38-pin DevKit (board "ESP32 Dev Module"). All grounds are one common GND.
 | GPIO5 | TFT CS | |
 | GPIO4 | TFT RST | |
 | GPIO27 | TFT DC | |
-| GPIO13 | TTP223 I/O | touch pad |
+| GPIO13 | push button (other leg to GND) | internal pull-up, no resistor |
 | GPIO25 | buzzer driver (NPN base, through 1k) | |
 | GPIO26 | relay module IN (+ 10k to GND) | |
 | GPIO32 | green ARMED LED (through 330R) | optional |
@@ -30,8 +30,8 @@ Free for later: GPIO14, 16, 17, 19, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) a
                                  ESP32 DevKit
                          ┌───────────────────────────┐
   5V RAIL ───────────────┤ VIN                   3V3 ├──┬── TFT VCC
-  GND RAIL ──────────────┤ GND                       │  ├── TFT BLK
-                         │                           │  └── TTP223 VCC
+  GND RAIL ──────────────┤ GND                       │  └── TFT BLK
+                         │                           │
   ZMPT OUT ──[10k]──●────┤ GPIO34                    │
                     ├─[20k]── GND                    │
                     └─|100nF|─ GND                   │
@@ -46,7 +46,7 @@ Free for later: GPIO14, 16, 17, 19, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) a
   TFT RST ───────────────┤ GPIO4                     │
   TFT DC ────────────────┤ GPIO27                    │
                          │                           │
-  TTP223 I/O ────────────┤ GPIO13                    │
+  GND ── button ─────────┤ GPIO13                    │
                          │                           │
   Relay IN ─────────●────┤ GPIO26                    │
                     └─[10k]── GND                    │
@@ -62,7 +62,7 @@ Free for later: GPIO14, 16, 17, 19, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) a
                          └───────────────────────────┘
 
   5V RAIL  ── ZMPT101B VCC, ACS712 VCC, relay module VCC (DC+)
-  GND RAIL ── ZMPT GND, ACS712 GND, relay GND (DC−), TFT GND, TTP223 GND, both 20k, all 100nF
+  GND RAIL ── ZMPT GND, ACS712 GND, relay GND (DC−), TFT GND, both 20k, all 100nF
   VIN–GND  ── 470 µF (long leg to VIN) + 100 nF, right at the ESP32 pins
 ```
 
@@ -76,7 +76,7 @@ The 10k/20k dividers scale the 5 V sensor outputs to 3.3 V. The 10k goes from th
 
 **TFT 1.77" ST7735S:** VCC → 3V3, GND → GND, SCK → 18, SDA → 23, CS → 5, RST → 4, DC → 27, BLK → 3V3.
 
-**Touch TTP223:** VCC → 3V3, GND → GND, I/O → GPIO13. Leave the A and B solder jumpers open (output high while touched, no toggle).
+**Push button:** one leg → GPIO13, the other → GND. No resistor: the firmware uses the ESP32's internal pull-up (reads LOW while pressed) and debounces it. On a 4-leg tactile switch use two diagonally opposite legs. Optional 100 nF across the button if its wires are long or run near mains. Short press: next screen. Hold 2 s: reset a trip.
 
 **Buzzer (5 V active):** + → 5V rail, − → NPN collector. NPN emitter → GND, base → 1k → GPIO25. BC547 legs, flat face towards you: C B E. 2N2222 (TO-92) flat face towards you: E B C.
 

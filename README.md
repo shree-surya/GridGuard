@@ -16,7 +16,7 @@ An ESP32 protector for single-phase 230 V loads up to 6 A, built into a modular 
 ```
 firmware/GridGuard_display_test/   display test: the five screens with simulated readings, no sensors
 docs/GridGuard-spec.md             limits, states, pins, display and web plan
-docs/wiring.md                     complete wiring: pins, dividers, relay, buzzer, touch, TFT, power, mains
+docs/wiring.md                     complete wiring: pins, dividers, relay, buzzer, button, TFT, power, mains
 docs/GridGuard-project-page.html   project page with a working simulator of the trip logic
 tools/ttf2gfx.py                   turns a TTF into an Adafruit GFX font (used for Bai Jamjuree)
 ```

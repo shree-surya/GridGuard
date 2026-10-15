@@ -32,7 +32,7 @@ Armed -> Tripping (delay counting) -> Tripped (relay open, buzzer, red LED, reas
 | 1.77" ST7735S TFT, 128 x 160, SPI | SCK 18, SDA(MOSI) 23, CS 5, RST 4, DC 27 | VCC 3V3, BLK 3V3. Replaces the 1.3" OLED |
 | Relay module 5 V, 10 A | GPIO26 | COM/NO on live. Use a high-level-trigger module (H/L jumper on H) and 10k GPIO26 to GND, so boot, crash or no power = relay open |
 | Buzzer, 5 V active | GPIO25 | through an NPN (BC547/2N2222), 1k base resistor |
-| Touch pad TTP223 | GPIO13 | moved from GPIO27, which is now the TFT DC. Short: next screen, 2 s hold: reset a trip |
+| Push button | GPIO13 | to GND, internal pull-up, debounced in firmware. Replaces the TTP223 touch pad. Short: next screen, 2 s hold: reset a trip |
 | Red TRIP LED / green ARMED LED | GPIO33 / GPIO32 | 330 ohm each |
 
 Power: Hi-Link HLK-5M05 straight to VIN (no series diode: a 1N4007-type drop left VIN at 3.6 V and the ESP32 browned out on WiFi start), 470 uF + 100 nF across VIN and GND. Never plug USB in while on mains. Hi-Link and ZMPT101B are tapped after the MCB and before the relay, so the controller keeps measuring after a trip. Check the relay logic polarity with a bulb before relying on it.
