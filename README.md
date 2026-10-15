@@ -15,6 +15,7 @@ An ESP32 protector for single-phase 230 V loads up to 6 A, built into a modular 
 
 ```
 firmware/GridGuard_display_test/   display test: the five screens with simulated readings, no sensors
+firmware/GridGuard_hw_test/        hardware test: sensors, button, buzzer, relay, LEDs on one screen
 docs/GridGuard-spec.md             limits, states, pins, display and web plan
 docs/wiring.md                     complete wiring: pins, dividers, relay, buzzer, button, TFT, power, mains
 docs/GridGuard-project-page.html   project page with a working simulator of the trip logic
