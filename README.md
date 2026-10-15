@@ -7,13 +7,14 @@ An ESP32 protector for single-phase 230 V loads up to 6 A, built into a modular 
 | Protects against | over-voltage, under-voltage, over-current, optional under-current |
 | Display | 1.77" colour TFT (ST7735S, 128 x 160, SPI) |
 | Web | own WiFi hotspot: settings behind a PIN, trip log, live graph |
-| Status | display layout being tested with simulated readings; main firmware not started |
+| Status | firmware 0.1.0: protection, display and button working in the PC simulation, not yet on hardware; WiFi and web page next |
 
 ![Display preview](docs/display-preview.png)
 
 ## Layout
 
 ```
+firmware/GridGuard/                the firmware: sensors, protection, relay, buzzer, button, display
 firmware/GridGuard_display_test/   display test: the five screens with simulated readings, no sensors
 firmware/GridGuard_hw_test/        hardware test: sensors, button, buzzer, relay, LEDs on one screen
 docs/GridGuard-spec.md             limits, states, pins, display and web plan
@@ -21,6 +22,15 @@ docs/wiring.md                     complete wiring: pins, dividers, relay, buzze
 docs/GridGuard-project-page.html   project page with a working simulator of the trip logic
 tools/ttf2gfx.py                   turns a TTF into an Adafruit GFX font (used for Bai Jamjuree)
 ```
+
+## Flash the firmware
+
+1. Arduino IDE, board **ESP32 Dev Module**. Library Manager: **Adafruit GFX Library** and **Adafruit ST7735 and ST7789 Library**.
+2. Open `firmware/GridGuard/GridGuard.ino` (keep `BaiJamjuree.h` beside it) and upload.
+3. Button: short press changes the screen, hold 2 s resets a trip. The relay closes 10 s after power-up if the voltage is in range.
+4. Calibrate in the Serial Monitor (115200, line ending "Newline"): `V 231.5` with your multimeter reading, `I 4.20` with your clamp meter reading on a kettle, `Z` with nothing plugged in, `F` if power reads negative, `?` to print.
+
+![Firmware screens](docs/firmware-screens.png)
 
 ## Run the display test
 
