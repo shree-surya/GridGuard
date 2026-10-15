@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GridGuard: your appliance's bodyguard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#1E1E1E; --deep:#000000; --fg:#FFFFFF; --fg2:#A0A0A0; --muted:#808080;
+  --accent:#FFCC00; --ok:#3DDC84; --bad:#FF4D3D; --odd:#262626; --even:#1E1E1E; --line:#343434;
+  color-scheme: dark;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1E1E1E; --deep:#000000; --fg:#FFFFFF; --fg2:#A0A0A0; --muted:#808080;
+    --accent:#FFCC00; --ok:#3DDC84; --bad:#FF4D3D; --odd:#262626; --even:#1E1E1E; --line:#343434;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1E1E1E; --deep:#000000; --fg:#FFFFFF; --fg2:#A0A0A0; --muted:#808080;
+  --accent:#FFCC00; --ok:#3DDC84; --bad:#FF4D3D; --odd:#262626; --even:#1E1E1E; --line:#343434;
+}
+html{background:var(--bg);scroll-padding-top:calc(env(safe-area-inset-top,0px) + 56px);scroll-behavior:smooth}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:"Bai Jamjuree",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+a{color:var(--accent)}
+h1,h2,h3{margin:0;line-height:1.15}
+h2{font-size:clamp(26px,4vw,36px);font-weight:700;letter-spacing:-.01em}
+h3{font-size:19px;font-weight:600}
+p{margin:0 0 12px;color:var(--fg2)}
+section{padding:60px 0;border-top:1px solid var(--line)}
+.sec-head{margin-bottom:26px;max-width:700px}
+.sec-head p{margin-top:8px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+
+nav{position:sticky;top:0;z-index:5;background:rgba(0,0,0,.9);backdrop-filter:blur(8px);
+  padding-top:env(safe-area-inset-top,0px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;gap:6px;overflow-x:auto;padding-top:10px;padding-bottom:10px;scrollbar-width:none}
+nav a{white-space:nowrap;text-decoration:none;color:var(--fg2);font-size:14px;font-weight:500;padding:6px 14px;border-radius:999px}
+nav a:hover{color:var(--deep);background:var(--accent)}
+
+/* hero */
+.hero{background:var(--deep);padding:54px 0 56px;border-bottom:6px solid var(--accent)}
+.hero h1{font-size:clamp(44px,9vw,88px);font-weight:700;letter-spacing:-.03em}
+.hero .tag{font-size:clamp(18px,3vw,24px);color:var(--accent);font-weight:500;margin:6px 0 14px}
+.hero .lead{max-width:640px;font-size:17px}
+.sim{display:grid;gap:22px;grid-template-columns:minmax(300px,1fr) minmax(300px,1fr);margin-top:30px;align-items:start}
+@media (max-width:820px){.sim{grid-template-columns:1fr}}
+
+/* the panel */
+.panel{background:var(--bg);border:2px solid var(--muted);border-radius:18px;padding:22px;position:relative;
+  box-shadow:inset 0 0 0 6px var(--deep), inset 0 0 0 7px var(--line)}
+.leds{display:flex;gap:10px;margin-bottom:12px}
+.led{width:14px;height:14px;border-radius:50%;background:#333;border:1px solid #555}
+.led.on.g{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+.led.on.y{background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.led.on.r{background:var(--bad);box-shadow:0 0 10px var(--bad)}
+.status{font-size:clamp(40px,8vw,64px);font-weight:700;letter-spacing:-.02em;line-height:1;color:var(--ok)}
+.panel[data-s="pending"] .status,.panel[data-s="wait"] .status{color:var(--accent)}
+.panel[data-s="tripped"] .status{color:var(--bad)}
+.sub{min-height:3.3em;margin:10px 0 8px;color:var(--fg2);font-size:15px}
+.bar{height:8px;background:#333;border-radius:4px;overflow:hidden;margin-bottom:18px}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .1s linear}
+.panel[data-s="tripped"] .bar i{background:var(--bad)}
+.gauge{margin-bottom:16px}
+.gauge .top{display:flex;justify-content:space-between;align-items:baseline}
+.gauge b{font-size:26px;font-variant-numeric:tabular-nums}
+.gauge span.l{font-size:13px;color:var(--fg2)}
+.track{position:relative;height:12px;background:#333;border-radius:6px;margin:6px 0 4px}
+.track .band{position:absolute;top:0;bottom:0;background:rgba(61,220,132,.35);border-left:2px solid var(--ok);border-right:2px solid var(--ok)}
+.track .mk{position:absolute;top:-4px;width:4px;height:20px;background:#fff;border-radius:2px;transform:translateX(-2px)}
+.scale{display:flex;justify-content:space-between;font-size:11px;color:var(--muted)}
+.ind{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:14px;color:var(--fg2);margin:4px 0 14px}
+.ind b{color:var(--fg)}
+.ind .bz.on{color:var(--bad)}
+.ind .bz.on b{animation:blink .7s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.ind .bz.on b{animation:none}html{scroll-behavior:auto}}
+.reset{width:100%;font-size:17px;padding:13px;border-radius:12px;background:#7a1e16;border:2px solid var(--bad);color:#fff}
+.reset:hover{background:var(--bad);color:#fff;border-color:var(--bad)}
+
+/* controls */
+.ctrl{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:18px}
+.ctrl h3{margin-bottom:10px;font-size:17px}
+.ctrl + .ctrl{margin-top:14px}
+.row{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+.fld label{display:block;font-size:13px;color:var(--fg2);margin-bottom:3px}
+.fld input[type=number],.fld select{width:100%;font-family:inherit;font-size:16px;color:var(--fg);background:var(--deep);border:1px solid var(--muted);border-radius:8px;padding:8px 10px}
+.slide label{display:flex;justify-content:space-between;font-size:14px;color:var(--fg2);margin-bottom:4px}
+.slide label output{color:var(--fg);font-weight:600}
+.slide{margin-bottom:12px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.chk{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--fg2);margin-top:10px}
+.chk input{accent-color:var(--accent);width:18px;height:18px}
+button,.btn{font-family:inherit;font-size:14px;font-weight:600;color:var(--fg);background:var(--odd);border:1px solid var(--muted);border-radius:999px;padding:8px 16px;cursor:pointer}
+button:hover{border-color:var(--accent);color:var(--accent)}
+.quick{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+
+/* tables */
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:15px}
+th{background:var(--deep);color:var(--accent);text-align:left;font-weight:600;padding:12px 14px}
+td{padding:11px 14px;vertical-align:top}
+tbody tr:nth-child(odd){background:var(--odd)}
+tbody tr:nth-child(even){background:var(--even)}
+td.m{color:var(--fg2)}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;color:var(--accent)}
+#logtbl{min-width:0}
+#logtbl td:first-child{white-space:nowrap;color:var(--fg2);font-variant-numeric:tabular-nums;width:1%}
+.empty{color:var(--muted);padding:14px}
+
+.flow{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin:0;padding:0;list-style:none;counter-reset:s}
+.flow li{position:relative;background:var(--odd);border-radius:12px;padding:24px 16px 16px;border:1px solid var(--line);border-top:3px solid var(--accent)}
+.flow li::before{counter-increment:s;content:counter(s);position:absolute;top:-13px;left:14px;background:var(--accent);color:var(--deep);font-weight:700;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:14px}
+.flow li.bad{border-top-color:var(--bad)}.flow li.bad::before{background:var(--bad);color:#fff}
+.flow b{display:block;color:var(--fg);margin-bottom:4px}
+.flow span{font-size:14px;color:var(--fg2)}
+
+.diagram{background:var(--deep);border:1px solid var(--line);border-radius:14px;padding:14px;margin:24px 0 0;overflow-x:auto}
+.diagram svg{display:block;min-width:600px;width:100%;height:auto}
+.diagram.tall svg{min-width:0;max-width:340px;margin:0 auto}
+.diagram figcaption{color:var(--fg2);font-size:13px;margin-top:8px}
+figure{margin:0}
+svg text{font-family:"Bai Jamjuree",system-ui,Arial,sans-serif}
+
+.two{display:grid;gap:22px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));align-items:start}
+.oled{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.scr{background:var(--deep);border:2px solid var(--muted);border-radius:10px;padding:12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--accent);line-height:1.7;min-height:118px}
+.scr small{display:block;font-family:"Bai Jamjuree",sans-serif;color:var(--muted);font-size:12px;margin-bottom:4px}
+.scr.bad{color:var(--bad);border-color:var(--bad)}
+.web{background:var(--odd);border:1px solid var(--line);border-radius:14px;padding:16px}
+ul.plain{margin:0;padding:0;list-style:none}
+ul.plain li{padding:9px 0 9px 22px;position:relative;color:var(--fg2);border-bottom:1px solid var(--line)}
+ul.plain li:last-child{border-bottom:0}
+ul.plain li::before{content:"";position:absolute;left:0;top:17px;width:10px;height:3px;background:var(--accent);border-radius:2px}
+ul.plain b{color:var(--fg);font-weight:600}
+.cols{display:grid;gap:26px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:start}
+.note{border-left:4px solid var(--bad);background:var(--odd);border-radius:0 12px 12px 0;padding:14px 18px;margin-top:22px}
+.note p{margin:0}.note b{color:var(--bad)}
+footer{padding:34px 0 50px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <a href="#demo">Try it</a><a href="#trip">How a trip works</a><a href="#presets">Presets</a>
+  <a href="#web">Screens and web page</a><a href="#build">The build</a>
+</div></nav>
+
+<header class="hero" id="demo"><div class="wrap">
+  <h1>GridGuard</h1>
+  <p class="tag">Your appliance's bodyguard.</p>
+  <p class="lead">A plug-in protector for any appliance up to 6A. You set the voltage and current limits on a web page it serves from its own WiFi. If the supply or the load goes outside them, it sounds an alarm and cuts the power. Below is the same logic running in your browser: drag the supply and load, then watch it decide.</p>
+
+  <div class="sim">
+    <div class="panel" id="panel" data-s="armed" aria-live="polite">
+      <div class="leds" aria-hidden="true"><span class="led g" id="lg"></span><span class="led y" id="ly"></span><span class="led r" id="lr"></span></div>
+      <div class="status" id="status">Armed</div>
+      <div class="sub" id="sub">Relay closed. The load is powered.</div>
+      <div class="bar"><i id="bar"></i></div>
+
+      <div class="gauge">
+        <div class="top"><span class="l">Voltage</span><b id="vv">230 V</b></div>
+        <div class="track"><span class="band" id="vband"></span><span class="mk" id="vmk"></span></div>
+        <div class="scale"><span>150 V</span><span>290 V</span></div>
+      </div>
+      <div class="gauge">
+        <div class="top"><span class="l">Current</span><b id="ii">2.0 A</b></div>
+        <div class="track"><span class="band" id="iband"></span><span class="mk" id="imk"></span></div>
+        <div class="scale"><span>0 A</span><span>9 A</span></div>
+      </div>
+      <div class="ind">
+        <span>Relay <b id="rel">on</b></span>
+        <span class="bz" id="bz">Buzzer <b id="buz">off</b></span>
+        <span>Trips <b id="trips">0</b></span>
+      </div>
+      <button type="button" class="reset" id="reset">Reset</button>
+    </div>
+
+    <div>
+      <div class="ctrl">
+        <h3>Simulate the supply and the load</h3>
+        <div class="slide"><label for="sv">Supply voltage <output id="svo">230 V</output></label>
+          <input type="range" id="sv" min="150" max="290" step="1" value="230"></div>
+        <div class="slide"><label for="sa">What the appliance draws <output id="sao">2.0 A</output></label>
+          <input type="range" id="sa" min="0" max="9" step="0.1" value="2"></div>
+        <div class="quick" role="group" aria-label="Quick faults">
+          <button type="button" data-v="270" data-a="2">Voltage surge</button>
+          <button type="button" data-v="170" data-a="2">Voltage sag</button>
+          <button type="button" data-v="230" data-a="8">Overload</button>
+          <button type="button" data-v="230" data-a="0" data-uc="1">Pump runs dry</button>
+          <button type="button" data-v="230" data-a="2">Back to normal</button>
+        </div>
+      </div>
+      <div class="ctrl">
+        <h3>Limits you set on the web page</h3>
+        <div class="row">
+          <div class="fld"><label for="ovv">Over-voltage, V</label><input id="ovv" type="number" value="250"></div>
+          <div class="fld"><label for="uvv">Under-voltage, V</label><input id="uvv" type="number" value="190"></div>
+          <div class="fld"><label for="ocv">Over-current, A</label><input id="ocv" type="number" step="0.1" value="6"></div>
+          <div class="fld"><label for="ucv">Under-current, A</label><input id="ucv" type="number" step="0.1" value="0.5"></div>
+        </div>
+        <label class="chk"><input type="checkbox" id="ucon"> Switch on the under-current check</label>
+      </div>
+      <div class="ctrl">
+        <h3>How it behaves</h3>
+        <div class="row">
+          <div class="fld"><label for="delay">Trip delay, s</label><input id="delay" type="number" min="0" step="0.5" value="2"></div>
+          <div class="fld"><label for="restart">Restart delay, s</label><input id="restart" type="number" min="1" value="10"></div>
+          <div class="fld"><label for="mode">After a trip</label><select id="mode"><option value="auto">Reconnect automatically</option><option value="manual">Wait for reset</option></select></div>
+          <div class="fld"><label for="preset">Preset</label><select id="preset"><option value="">Custom</option><option value="fridge">Fridge</option><option value="pump">Water pump</option><option value="charger">Charger</option></select></div>
+        </div>
+        <label class="chk"><input type="checkbox" id="ff"> Fast-forward the timers ten times</label>
+      </div>
+    </div>
+  </div>
+</div></header>
+
+<section id="log"><div class="wrap">
+  <div class="sec-head"><h2>Event log</h2>
+  <p>Every trip and reconnect is written down with its reason and the readings at that moment. On the real unit the log lives in flash memory, so it survives a power cut. Times come from your phone when you open the page.</p></div>
+  <div class="tw"><table id="logtbl"><thead><tr><th>Time</th><th>Event</th></tr></thead><tbody id="logbody"></tbody></table></div>
+</div></section>
+
+<section id="trip"><div class="wrap">
+  <div class="sec-head"><h2>How a trip works</h2>
+  <p>The unit checks the readings several times a second. A short spike should not cut the power, so it waits out the trip delay before it acts.</p></div>
+  <ol class="flow">
+    <li><b>Armed</b><span>Relay closed. All four limits are checked continuously.</span></li>
+    <li><b>Tripping</b><span>A limit is crossed. The trip delay counts down. If the reading recovers, it goes back to armed.</span></li>
+    <li class="bad"><b>Tripped</b><span>Relay opens, buzzer sounds, red LED lights, and the reason is logged.</span></li>
+    <li><b>Waiting</b><span>Automatic mode: once the supply is normal, the restart delay counts down. Manual mode: it waits for a reset.</span></li>
+    <li><b>Armed again</b><span>Relay closes. If the fault is still there, it trips again.</span></li>
+  </ol>
+  <div class="tw" style="margin-top:26px"><table>
+    <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Over-voltage and under-voltage</td><td class="m">Trip when the supply goes above or below your limits.</td></tr>
+      <tr><td>Over-current</td><td class="m">Trip when the appliance draws more than your limit. Keep it at or below 7A, under the relay's rating.</td></tr>
+      <tr><td>Under-current</td><td class="m">Trip when the draw falls too low, such as a pump running dry. Not below about 0.3A, where the sensor gets noisy.</td></tr>
+      <tr><td>Trip delay</td><td class="m">How long a fault must last before the relay opens.</td></tr>
+      <tr><td>Hysteresis</td><td class="m">A small margin so readings hovering at a limit do not make the relay chatter.</td></tr>
+      <tr><td>Restart delay</td><td class="m">Wait before reconnecting. Fridges need about three minutes.</td></tr>
+      <tr><td>After a trip</td><td class="m">Reconnect on its own, or wait for a reset from the touch pad, the red button or the web page.</td></tr>
+    </tbody>
+  </table></div>
+  <p style="margin-top:12px;font-size:14px">One detail the demo copies from the real unit: with the relay open it cannot see the load current. After a current trip it simply retries when the restart delay ends, and trips again if the fault is still there.</p>
+</div></section>
+
+<section id="presets"><div class="wrap">
+  <div class="sec-head"><h2>Presets</h2>
+  <p>Starting points for common appliances. Pick one from the menu above and adjust it for your own appliance.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>Preset</th><th>Voltage band</th><th>Over-current</th><th>Under-current</th><th>Restart delay</th></tr></thead>
+    <tbody>
+      <tr><td>Fridge</td><td class="m">190 to 250 V</td><td class="m">6 A</td><td class="m">off</td><td class="m">180 s</td></tr>
+      <tr><td>Water pump</td><td class="m">190 to 250 V</td><td class="m">6 A</td><td class="m">0.5 A, catches dry running</td><td class="m">30 s</td></tr>
+      <tr><td>Charger</td><td class="m">190 to 250 V</td><td class="m">3 A</td><td class="m">off</td><td class="m">10 s</td></tr>
+    </tbody>
+  </table></div>
+</div></section>
+
+<section id="web"><div class="wrap">
+  <div class="sec-head"><h2>Screens and web page</h2>
+  <p>Join the WiFi named GridGuard followed by four characters, then open 192.168.4.1. The settings page asks for a password, so nobody else on the network can change the limits.</p></div>
+  <div class="two">
+    <div>
+      <h3 style="margin-bottom:12px">On the 1.3 inch OLED</h3>
+      <div class="oled">
+        <div class="scr"><small>Status</small>ARMED<br>230 V   2.0 A<br>trips 0</div>
+        <div class="scr"><small>Graph</small>▂▂▃▃▃▃▃▄▃▃▃▃<br>voltage, limits shown<br>190 V to 250 V</div>
+        <div class="scr bad"><small>Tripped</small>OVER-VOLTAGE<br>270 V at 14:02<br>hold touch to reset</div>
+        <div class="scr"><small>Connect</small>WiFi: GridGuard-7C1E<br>Open 192.168.4.1<br>Mode: auto</div>
+      </div>
+      <p style="margin-top:12px;font-size:14px">A short touch changes page. Holding it for two seconds resets a trip.</p>
+    </div>
+    <div>
+      <h3 style="margin-bottom:12px">On the web page</h3>
+      <div class="web">
+        <svg viewBox="0 0 400 150" width="100%" role="img" aria-label="Graph of voltage with limit lines">
+          <rect width="400" height="150" fill="#000" rx="8"/>
+          <line x1="0" y1="34" x2="400" y2="34" stroke="#FF4D3D" stroke-dasharray="6 5"/>
+          <line x1="0" y1="116" x2="400" y2="116" stroke="#FF4D3D" stroke-dasharray="6 5"/>
+          <text x="8" y="28" fill="#FF4D3D" font-size="10">over-voltage 250 V</text>
+          <text x="8" y="130" fill="#FF4D3D" font-size="10">under-voltage 190 V</text>
+          <path d="M0 76 L60 74 L110 78 L150 75 L190 30 L215 22 L240 74 L300 76 L350 79 L400 75" fill="none" stroke="#FFCC00" stroke-width="2.5"/>
+          <circle cx="215" cy="22" r="5" fill="#FF4D3D"/>
+        </svg>
+        <ul class="plain" style="margin-top:8px">
+          <li><b>Graph with limit lines</b> so you see how close the supply gets.</li>
+          <li><b>Settings</b> for all four limits, delays, reconnect mode and presets.</li>
+          <li><b>Event log</b> with the reason and readings for each trip.</li>
+          <li><b>Manual on and off</b> for the relay, and a calibration page.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<section id="build"><div class="wrap">
+  <div class="sec-head"><h2>The build</h2>
+  <p>A 6A junction-style box in a tinted case. It looks like a finished product: status lights, an alarm and a red reset button, with the wiring tucked behind the smoked cover.</p></div>
+  <figure class="diagram">
+  <svg viewBox="0 0 900 400" role="img" aria-label="GridGuard block diagram">
+    <defs><marker id="b1" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#FFCC00"/></marker>
+    <marker id="b2" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#A0A0A0"/></marker></defs>
+    <text x="10" y="30" fill="#FFCC00" font-size="14" font-weight="600">Power path, 230 V</text>
+    <g fill="#262626" stroke="#FFCC00" stroke-width="1.5">
+      <rect x="10" y="60" width="130" height="56" rx="10"/><rect x="160" y="60" width="130" height="56" rx="10"/><rect x="310" y="60" width="130" height="56" rx="10"/>
+      <rect x="460" y="60" width="130" height="56" rx="10"/><rect x="610" y="60" width="130" height="56" rx="10"/><rect x="760" y="60" width="130" height="56" rx="10"/>
+    </g>
+    <g fill="#fff" font-size="14" font-weight="500" text-anchor="middle">
+      <text x="75" y="93">Wall socket</text><text x="225" y="93">6A plug</text><text x="375" y="93">6A MCB</text><text x="525" y="93">Relay, live</text><text x="675" y="93">ACS712</text><text x="825" y="93">6A socket</text>
+    </g>
+    <g stroke="#FFCC00" stroke-width="2" marker-end="url(#b1)">
+      <line x1="140" y1="88" x2="158" y2="88"/><line x1="290" y1="88" x2="308" y2="88"/><line x1="440" y1="88" x2="458" y2="88"/><line x1="590" y1="88" x2="608" y2="88"/><line x1="740" y1="88" x2="758" y2="88"/>
+    </g>
+    <text x="825" y="138" fill="#A0A0A0" font-size="12" text-anchor="middle">to appliance</text>
+
+    <rect x="160" y="230" width="130" height="56" rx="10" fill="#262626" stroke="#A0A0A0" stroke-width="1.5"/>
+    <text x="225" y="254" fill="#fff" font-size="14" font-weight="500" text-anchor="middle">ZMPT101B</text>
+    <text x="225" y="272" fill="#A0A0A0" font-size="12" text-anchor="middle">voltage</text>
+    <line x1="225" y1="116" x2="225" y2="230" stroke="#A0A0A0" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="233" y="180" fill="#A0A0A0" font-size="12">taps before the relay</text>
+    <line x1="290" y1="258" x2="328" y2="258" stroke="#A0A0A0" stroke-width="2" marker-end="url(#b2)"/>
+
+    <rect x="330" y="230" width="240" height="80" rx="12" fill="#000" stroke="#FFCC00" stroke-width="2.5"/>
+    <text x="450" y="264" fill="#FFCC00" font-size="21" font-weight="700" text-anchor="middle">ESP32</text>
+    <text x="450" y="288" fill="#A0A0A0" font-size="12" text-anchor="middle">measure, compare, decide</text>
+    <polyline points="650,116 650,270 572,270" fill="none" stroke="#A0A0A0" stroke-width="2" marker-end="url(#b2)"/>
+    <text x="658" y="200" fill="#A0A0A0" font-size="12">current</text>
+    <line x1="525" y1="230" x2="525" y2="118" stroke="#FFCC00" stroke-width="2" marker-end="url(#b1)"/>
+    <text x="533" y="180" fill="#FFCC00" font-size="12">open or close</text>
+
+    <g stroke="#A0A0A0" stroke-width="1.5" fill="none" marker-end="url(#b2)">
+      <line x1="345" y1="310" x2="345" y2="342"/><line x1="400" y1="310" x2="400" y2="342"/><line x1="475" y1="310" x2="475" y2="342"/><line x1="545" y1="310" x2="545" y2="342"/>
+      <polyline points="570,298 690,298 690,342"/>
+    </g>
+    <g fill="#262626" stroke="#A0A0A0" stroke-width="1.5">
+      <rect x="240" y="344" width="110" height="44" rx="8"/><rect x="360" y="344" width="80" height="44" rx="8"/><rect x="450" y="344" width="70" height="44" rx="8"/>
+      <rect x="530" y="344" width="70" height="44" rx="8"/><rect x="610" y="344" width="150" height="44" rx="8"/>
+    </g>
+    <g fill="#fff" font-size="13" text-anchor="middle">
+      <text x="295" y="371">OLED 1.3"</text><text x="400" y="371">Touch + reset</text><text x="485" y="371">Buzzer</text><text x="565" y="371">3 LEDs</text><text x="685" y="371">Own WiFi to phone</text>
+    </g>
+  </svg>
+  <figcaption>The ZMPT101B and the Hi-Link 5 V supply are tapped before the relay, so the controller stays alive after a trip and can watch the supply return.</figcaption>
+  </figure>
+
+  <div class="cols" style="margin-top:26px">
+    <figure class="diagram tall" style="margin:0">
+      <svg viewBox="0 0 360 520" role="img" aria-label="GridGuard front panel">
+        <rect x="20" y="20" width="320" height="480" rx="20" fill="#0a0a0a" stroke="#FFCC00" stroke-width="3"/>
+        <rect x="32" y="32" width="296" height="456" rx="14" fill="#000" fill-opacity=".5" stroke="#555" stroke-width="1"/>
+        <text x="180" y="56" fill="#FFCC00" font-size="15" font-weight="700" text-anchor="middle">GridGuard</text>
+        <rect x="62" y="70" width="236" height="110" rx="10" fill="#111" stroke="#A0A0A0" stroke-width="1.5"/>
+        <text x="76" y="104" fill="#3DDC84" font-size="24" font-family="monospace" font-weight="700">ARMED</text>
+        <text x="76" y="132" fill="#FFCC00" font-size="17" font-family="monospace">230 V   2.0 A</text>
+        <path d="M76 160 L110 156 L150 158 L190 152 L230 156 L280 154" stroke="#FFCC00" stroke-width="1.5" fill="none"/>
+        <text x="180" y="198" fill="#A0A0A0" font-size="11" text-anchor="middle">1.3" OLED</text>
+        <circle cx="86" cy="230" r="9" fill="#3DDC84"/><circle cx="118" cy="230" r="9" fill="#FFCC00" fill-opacity=".25" stroke="#FFCC00"/><circle cx="150" cy="230" r="9" fill="#FF4D3D" fill-opacity=".25" stroke="#FF4D3D"/>
+        <text x="118" y="258" fill="#A0A0A0" font-size="10" text-anchor="middle">status LEDs</text>
+        <circle cx="262" cy="230" r="22" fill="#262626" stroke="#A0A0A0"/>
+        <g stroke="#A0A0A0" stroke-width="2"><line x1="250" y1="222" x2="274" y2="222"/><line x1="250" y1="230" x2="274" y2="230"/><line x1="250" y1="238" x2="274" y2="238"/></g>
+        <text x="262" y="268" fill="#A0A0A0" font-size="10" text-anchor="middle">buzzer</text>
+        <circle cx="110" cy="318" r="18" fill="none" stroke="#FFCC00" stroke-width="2.5"/><circle cx="110" cy="318" r="5" fill="#FFCC00"/>
+        <text x="110" y="354" fill="#A0A0A0" font-size="10" text-anchor="middle">touch pad</text>
+        <circle cx="250" cy="318" r="26" fill="#FF4D3D" stroke="#fff" stroke-opacity=".6" stroke-width="2"/>
+        <text x="250" y="358" fill="#A0A0A0" font-size="10" text-anchor="middle">reset</text>
+        <rect x="52" y="378" width="150" height="100" rx="12" fill="#262626" stroke="#A0A0A0" stroke-width="1.5"/>
+        <circle cx="127" cy="404" r="8" fill="#000" stroke="#FFCC00" stroke-width="2"/><circle cx="100" cy="448" r="8" fill="#000" stroke="#FFCC00" stroke-width="2"/><circle cx="154" cy="448" r="8" fill="#000" stroke="#FFCC00" stroke-width="2"/>
+        <text x="127" y="470" fill="#fff" font-size="10" text-anchor="middle">6A socket</text>
+        <rect x="236" y="378" width="70" height="100" rx="10" fill="#262626" stroke="#A0A0A0" stroke-width="1.5"/>
+        <rect x="256" y="392" width="30" height="46" rx="6" fill="#FFCC00"/>
+        <text x="271" y="458" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">MCB 6A</text>
+      </svg>
+      <figcaption>Front view behind the smoked cover.</figcaption>
+    </figure>
+    <div>
+      <ul class="plain">
+        <li><b>Back:</b> 6A plug to the wall, on a short cord.</li>
+        <li><b>Front:</b> 6A socket, 1.3 inch OLED, status LEDs, buzzer, touch pad, red reset button and the MCB.</li>
+        <li><b>Smoked cover:</b> tinted polycarbonate with tool-only screws, over insulated terminal covers.</li>
+        <li><b>Relay:</b> wired so it is open when unpowered. A dead controller means the load is off.</li>
+        <li><b>Two zones:</b> mains parts on one side and the low-voltage ESP32 side on the other, with a barrier between them.</li>
+        <li><b>Power for the ESP32:</b> a sealed 5 V Hi-Link module with a 1 A slow-blow fuse, taken from before the relay.</li>
+        <li><b>Settings:</b> kept in flash, so limits survive a power cut.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note"><p><b>The MCB is the real protection.</b> It stops short circuits in milliseconds and does not depend on software. GridGuard's relay is a second layer for voltage and current limits, and it is rated for loads up to 6A.</p></div>
+</div></section>
+
+<footer><div class="wrap">GridGuard. A learning and demonstration project on 230 V mains. Not a certified protection device. Handle with care.</div></footer>
+
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  let st='armed', relay=true, timer=0, wait=0, reason='', trips=0, blank=0, buzzer=false;
+  const log=[];
+  const now=()=>new Date().toLocaleTimeString([],{hour12:false});
+  function addLog(t){log.unshift([now(),t]);if(log.length>8)log.pop();renderLog();}
+  function renderLog(){
+    const b=$('logbody');
+    if(!log.length){b.innerHTML='<tr><td colspan="2" class="empty">Nothing yet. Drag the supply to a surge and watch it appear here.</td></tr>';return;}
+    b.innerHTML=log.map(r=>'<tr><td>'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
+  }
+  function cfg(){return{ovv:+$('ovv').value,uvv:+$('uvv').value,ocv:+$('ocv').value,ucv:+$('ucv').value,
+    ucOn:$('ucon').checked,delay:+$('delay').value,restart:+$('restart').value,mode:$('mode').value};}
+  function reading(){const V=+$('sv').value,d=+$('sa').value;return{V:V,I:relay?d:0};}
+  function fault(c,r){
+    if(r.V>c.ovv)return'Over-voltage';
+    if(r.V<c.uvv)return'Under-voltage';
+    if(relay){
+      if(r.I>c.ocv)return'Over-current';
+      if(c.ucOn&&blank<=0&&r.I<c.ucv)return'Under-current';
+    }
+    return'';
+  }
+  function vOk(c,r){return r.V<=c.ovv*0.98&&r.V>=c.uvv*1.02;}
+  function warn(c,r){
+    return r.V>c.ovv*0.97||r.V<c.uvv*1.03||(relay&&r.I>c.ocv*0.9);
+  }
+  function snap(r){return r.V+' V, '+r.I.toFixed(1)+' A';}
+  function trip(f,r){
+    relay=false;st='tripped';buzzer=true;trips++;reason=f;
+    addLog('<b>Tripped: '+f+'.</b> '+(f.indexOf('current')>0?$('sa').value+' A drawn at '+r.V+' V':snap(r)));
+  }
+  function close(msg){relay=true;st='armed';buzzer=false;blank=1.5;timer=0;addLog(msg);}
+  function tick(){
+    const c=cfg(),r=reading(),dt=0.1*($('ff').checked?10:1);
+    if(relay&&blank>0)blank-=dt;
+    if(st==='armed'){
+      const f=fault(c,r);
+      if(f){st='pending';timer=0;reason=f;}
+    }else if(st==='pending'){
+      const f=fault(c,r);
+      if(!f){st='armed';}
+      else{reason=f;timer+=dt;if(timer>=c.delay)trip(f,r);}
+    }else if(st==='tripped'){
+      if(c.mode==='auto'&&vOk(c,r)){st='wait';wait=c.restart;}
+    }else if(st==='wait'){
+      if(!vOk(c,r)){st='tripped';}
+      else{wait-=dt;if(wait<=0)close('Reconnected automatically after '+c.restart+' s.');}
+    }
+    draw(c,r);
+  }
+  function pct(v,lo,hi){return Math.max(0,Math.min(100,(v-lo)/(hi-lo)*100));}
+  function draw(c,r){
+    const p=$('panel');p.dataset.s=st;
+    const w=warn(c,r);
+    let s='Armed',sub='Relay closed. The load is powered.',bar=0;
+    if(st==='armed'&&w){s='Warning';sub='Close to a limit. Still powered.';}
+    if(st==='pending'){s='Tripping';sub=reason+'. Cutting power in '+Math.max(0,(c.delay-timer)).toFixed(1)+' s unless it recovers.';bar=c.delay>0?timer/c.delay*100:100;}
+    if(st==='tripped'){s='Tripped';
+      sub=reason+'. Power is off.'+(c.mode==='auto'?(reason.indexOf('voltage')>0?' Waiting for the supply to return.':''):' Press reset to reconnect.');}
+    if(st==='wait'){s='Reconnecting';sub='Supply is normal. Restarting in '+Math.max(0,wait).toFixed(0)+' s.';bar=(1-wait/c.restart)*100;}
+    $('status').textContent=s;$('sub').textContent=sub;$('bar').style.width=Math.min(100,bar)+'%';
+    $('lg').classList.toggle('on',st==='armed'&&!w);
+    $('ly').classList.toggle('on',(st==='armed'&&w)||st==='pending'||st==='wait');
+    $('lr').classList.toggle('on',st==='tripped');
+    $('vv').textContent=r.V+' V';$('ii').textContent=r.I.toFixed(1)+' A';
+    $('vmk').style.left=pct(r.V,150,290)+'%';$('imk').style.left=pct(r.I,0,9)+'%';
+    const vb=$('vband');vb.style.left=pct(c.uvv,150,290)+'%';vb.style.width=(pct(c.ovv,150,290)-pct(c.uvv,150,290))+'%';
+    const ib=$('iband'),lo=c.ucOn?c.ucv:0;ib.style.left=pct(lo,0,9)+'%';ib.style.width=(pct(c.ocv,0,9)-pct(lo,0,9))+'%';
+    $('rel').textContent=relay?'on':'off';
+    $('buz').textContent=buzzer?'sounding':'off';$('bz').classList.toggle('on',buzzer);
+    $('trips').textContent=trips;
+    $('svo').textContent=$('sv').value+' V';$('sao').textContent=(+$('sa').value).toFixed(1)+' A';
+  }
+  $('reset').addEventListener('click',()=>{
+    const c=cfg(),r=reading();
+    if(st==='armed'||st==='pending'){addLog('Reset pressed. Nothing to reset.');return;}
+    if(!vOk(c,r)){addLog('Reset refused: the supply is still out of range ('+r.V+' V).');return;}
+    close('Reconnected by reset.');
+  });
+  document.querySelectorAll('.quick button').forEach(b=>b.addEventListener('click',()=>{
+    $('sv').value=b.dataset.v;$('sa').value=b.dataset.a;
+    if(b.dataset.uc){$('ucon').checked=true;}
+  }));
+  const PRE={fridge:{ovv:250,uvv:190,ocv:6,ucon:false,ucv:0.5,restart:180},
+             pump:{ovv:250,uvv:190,ocv:6,ucon:true,ucv:0.5,restart:30},
+             charger:{ovv:250,uvv:190,ocv:3,ucon:false,ucv:0.5,restart:10}};
+  $('preset').addEventListener('change',e=>{
+    const p=PRE[e.target.value];if(!p)return;
+    $('ovv').value=p.ovv;$('uvv').value=p.uvv;$('ocv').value=p.ocv;$('ucv').value=p.ucv;
+    $('ucon').checked=p.ucon;$('restart').value=p.restart;
+    addLog('Preset applied: '+e.target.options[e.target.selectedIndex].text+'.');
+  });
+  renderLog();draw(cfg(),reading());
+  setInterval(tick,100);
+})();
+</script>
+</body>
+</html>
