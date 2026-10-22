@@ -14,7 +14,7 @@
     TFT RST  -> GPIO4                      "Adafruit ST7735 and ST7789 Library"
     TFT DC   -> GPIO27                   Serial Monitor: 115200
     TFT SDA  -> GPIO19  (SPI data, not I2C)
-    TFT SCK  -> GPIO18  (SPI clock)
+    TFT SCK  -> GPIO23  (SPI clock)
     TFT BLK  -> 3V3     (backlight, if your module has the pin)
 
   FILES: keep BaiJamjuree.h in the same folder as this .ino (the IDE shows it as a second tab).
@@ -42,7 +42,7 @@ int  textW(const char *s, const GFXfont *f = nullptr);
 
 // ---------------- pins and panel ----------------
 const int  TFT_CS = 5, TFT_RST = 4, TFT_DC = 27;
-const int TFT_SDA = 19, TFT_SCK = 18;   // SPI data (MOSI) and clock: any free GPIOs work, set them to where your wires go
+const int TFT_SDA = 19, TFT_SCK = 23;   // SPI data (MOSI) and clock: any free GPIOs work, set them to where your wires go
 const bool INVERT = false;
 const int  W = 128, H = 160;
 
