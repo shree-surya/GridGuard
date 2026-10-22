@@ -36,7 +36,7 @@ tools/ttf2gfx.py                   turns a TTF into an Adafruit GFX font (used f
 
 1. Arduino IDE, board **ESP32 Dev Module**. Library Manager: **Adafruit GFX Library** and **Adafruit ST7735 and ST7789 Library**.
 2. Open `firmware/GridGuard_display_test/GridGuard_display_test.ino`. `BaiJamjuree.h` must stay in the same folder (it shows as a second tab).
-3. Wiring: TFT VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 23, SCK 18, BLK 3V3.
+3. Wiring: TFT VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 18, BLK 3V3.
 4. Upload. The screen changes every 5 s while a 100 s story runs: normal, over-voltage trip, reconnect, over-current trip, under-voltage trip. Serial Monitor at 115200 logs each trip.
 
 If the picture is shifted, inverted or red and blue are swapped, see the notes at the top of the sketch.

@@ -12,7 +12,7 @@ ESP32 38-pin DevKit (board "ESP32 Dev Module"). All grounds are one common GND.
 | GPIO34 | voltage divider node (ZMPT101B OUT) | input only, ADC1 |
 | GPIO35 | voltage divider node (ACS712 OUT) | input only, ADC1 |
 | GPIO18 | TFT SCK | SPI clock |
-| GPIO23 | TFT SDA | SPI data (MOSI), not I2C |
+| GPIO19 | TFT SDA | SPI data (MOSI), not I2C |
 | GPIO5 | TFT CS | |
 | GPIO4 | TFT RST | |
 | GPIO27 | TFT DC | |
@@ -22,7 +22,7 @@ ESP32 38-pin DevKit (board "ESP32 Dev Module"). All grounds are one common GND.
 | GPIO32 | green ARMED LED (through 330R) | optional |
 | GPIO33 | red TRIP LED (through 330R) | optional |
 
-Free for later: GPIO14, 16, 17, 19, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) and 6 to 11 (flash).
+Free for later: GPIO14, 16, 17, 21, 22, 23. Avoid GPIO0, 2, 12, 15 (boot pins) and 6 to 11 (flash).
 
 ## Low-voltage side
 
@@ -41,7 +41,7 @@ Free for later: GPIO14, 16, 17, 19, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) a
                     └─|100nF|─ GND                   │
                          │                           │
   TFT SCK ───────────────┤ GPIO18                    │
-  TFT SDA ───────────────┤ GPIO23                    │
+  TFT SDA ───────────────┤ GPIO19                    │
   TFT CS ────────────────┤ GPIO5                     │
   TFT RST ───────────────┤ GPIO4                     │
   TFT DC ────────────────┤ GPIO27                    │
@@ -74,7 +74,7 @@ Free for later: GPIO14, 16, 17, 19, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) a
 
 The 10k/20k dividers scale the 5 V sensor outputs to 3.3 V. The 10k goes from the sensor to the node, the 20k from the node to GND. Swapped, the pin can see over 3.3 V.
 
-**TFT 1.77" ST7735S:** VCC → 3V3, GND → GND, SCK → 18, SDA → 23, CS → 5, RST → 4, DC → 27, BLK → 3V3.
+**TFT 1.77" ST7735S:** VCC → 3V3, GND → GND, SCK → 18, SDA → 19, CS → 5, RST → 4, DC → 27, BLK → 3V3.
 
 **Push button:** one leg → GPIO13, the other → GND. No resistor: the firmware uses the ESP32's internal pull-up (reads LOW while pressed) and debounces it. On a 4-leg tactile switch use two diagonally opposite legs. Optional 100 nF across the button if its wires are long or run near mains. Short press: next screen. Hold 2 s: reset a trip.
 

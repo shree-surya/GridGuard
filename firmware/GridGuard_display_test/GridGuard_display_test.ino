@@ -13,7 +13,7 @@
     TFT CS   -> GPIO5                      "Adafruit GFX Library"
     TFT RST  -> GPIO4                      "Adafruit ST7735 and ST7789 Library"
     TFT DC   -> GPIO27                   Serial Monitor: 115200
-    TFT SDA  -> GPIO23  (SPI data, not I2C)
+    TFT SDA  -> GPIO19  (SPI data, not I2C)
     TFT SCK  -> GPIO18  (SPI clock)
     TFT BLK  -> 3V3     (backlight, if your module has the pin)
 
@@ -42,10 +42,11 @@ int  textW(const char *s, const GFXfont *f = nullptr);
 
 // ---------------- pins and panel ----------------
 const int  TFT_CS = 5, TFT_RST = 4, TFT_DC = 27;
+const int TFT_SDA = 19, TFT_SCK = 18;   // SPI data (MOSI) and clock: any free GPIOs work, set them to where your wires go
 const bool INVERT = false;
 const int  W = 128, H = 160;
 
-Adafruit_ST7735 tft(TFT_CS, TFT_DC, TFT_RST);   // hardware SPI: SCK 18, MOSI 23
+Adafruit_ST7735 tft(TFT_CS, TFT_DC, TFT_RST);   // hardware SPI on TFT_SCK / TFT_SDA
 GFXcanvas16     cv(W, H);                       // draw here, then send the whole frame (no flicker)
 
 // ---------------- colours (same palette as the web pages) ----------------
@@ -358,6 +359,7 @@ uint32_t lastTick = 0, lastHist = 0;
 
 void setup() {
   Serial.begin(115200);
+  SPI.begin(TFT_SCK, -1, TFT_SDA, TFT_CS);   // hardware SPI on our pins (the library then keeps them)
   tft.initR(INITR_BLACKTAB);
   tft.setSPISpeed(27000000);
   tft.setRotation(0);          // portrait, 128 wide x 160 tall; 2 turns it upside down

@@ -16,7 +16,7 @@
             WiFi and the web page come in a later version.
 
   WIRING (docs/wiring.md)
-    TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 23, SCK 18, BLK 3V3
+    TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 18, BLK 3V3
     ZMPT101B  OUT -> 10k -> GPIO34 node (20k + 100nF to GND)       VCC 5V
     ACS712    OUT -> 10k -> GPIO35 node (20k + 100nF to GND)       VCC 5V, IP+/IP- in the live after the relay
     Relay     IN GPIO26 (+10k to GND), H trigger, COM/NO in the live, VCC 5V
@@ -57,6 +57,7 @@ void textC(const char *s, int y, uint16_t col, const GFXfont *f = nullptr);
 
 // ---------------- pins ----------------
 const int TFT_CS = 5, TFT_RST = 4, TFT_DC = 27;
+const int TFT_SDA = 19, TFT_SCK = 18;   // SPI data (MOSI) and clock: any free GPIOs work, set them to where your wires go
 const int PIN_V = 34, PIN_I = 35;
 const int PIN_BTN = 13, PIN_BUZ = 25, PIN_RELAY = 26, PIN_LED_G = 32, PIN_LED_R = 33;
 
@@ -576,6 +577,7 @@ void setup() {
   I_NOISE = prefs.getFloat("inoise", I_NOISE_DEF);
   I_SIGN = prefs.getInt("isign", I_SIGN_DEF) < 0 ? -1 : 1;
 
+  SPI.begin(TFT_SCK, -1, TFT_SDA, TFT_CS);   // hardware SPI on our pins (the library then keeps them)
   tft.initR(INITR_BLACKTAB);
   tft.setSPISpeed(27000000);
   tft.setRotation(0);
