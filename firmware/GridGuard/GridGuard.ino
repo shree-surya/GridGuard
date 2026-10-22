@@ -1,54 +1,65 @@
 /*
-  GridGuard: ESP32 over/under-voltage and over-current protector with a relay cut-off
-  ==================================================================================
+  GridGuard: ESP32 over/under-voltage, over-current and over-power protector with a relay cut-off
+  ===============================================================================================
   Measures the mains voltage (ZMPT101B) and load current (ACS712-20A) every 200 ms, opens the relay
   when a value stays outside its limit for the trip delay, and closes it again after the restart
-  delay once the supply is back in range. Shows everything on a 1.77" colour TFT.
+  delay once the supply is back in range. Shows everything on a 1.77" colour TFT and on its own
+  WiFi hotspot:
+
+      WiFi  "GridGuard"   password  "gridguard"      ->  http://192.168.4.1
+
+  WEB PAGE   live voltage, current, power, PF and relay state; a 60 s graph; the trip log;
+             the limits (over-voltage, under-voltage, over-current, over-power), saved in flash;
+             a relay ON / OFF button. Protection stays active while the relay is on.
 
   BUTTON (GPIO13 to GND)
     short press      next screen (the screen otherwise stays where it is)
-    hold 2 s         reset a trip now (refused while the supply is still out of range)
+    hold 2 s         relay on (resets a trip; refused while the supply is out of range),
+                     or relay off if it is on (manual OFF, stays off until turned on again)
   A trip always brings the Home screen up.
 
-  SCREENS   Home, Graph (last 60 s), Trips, Limits, Info
-
-  POWER-UP  The relay stays open for the restart delay (10 s) and closes only if the voltage is in range.
-            WiFi and the web page come in a later version.
+  POWER-UP   The relay stays open for the restart delay (10 s) and closes only if the voltage is in range.
 
   WIRING (docs/wiring.md)
-    TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 18, BLK 3V3
+    TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 18, BLK 3V3   (pins set just below)
     ZMPT101B  OUT -> 10k -> GPIO34 node (20k + 100nF to GND)       VCC 5V
     ACS712    OUT -> 10k -> GPIO35 node (20k + 100nF to GND)       VCC 5V, IP+/IP- in the live after the relay
     Relay     IN GPIO26 (+10k to GND), H trigger, COM/NO in the live, VCC 5V
     Button    GPIO13 to GND        Buzzer GPIO25 via NPN        LEDs GPIO32 green, GPIO33 red (optional)
 
   ARDUINO IDE
-    Board "ESP32 Dev Module". Libraries: "Adafruit GFX Library", "Adafruit ST7735 and ST7789 Library".
-    Keep BaiJamjuree.h in this folder (second tab). Serial Monitor 115200, line ending "Newline".
+    Board "ESP32 Dev Module", Partition Scheme "Huge APP (3MB No OTA/1MB SPIFFS)".
+    Libraries: "Adafruit GFX Library", "Adafruit ST7735 and ST7789 Library" (Library Manager),
+               ESPAsyncWebServer and AsyncTCP (ESP32Async, GitHub -> Download ZIP -> Add .ZIP Library).
+    Keep BaiJamjuree.h and web_index.h in this folder. Serial Monitor 115200, line ending "Newline".
+    The page is web/index.html; after editing it run  python tools/embed_web.py  to rebuild web_index.h.
 
-  CALIBRATION (Serial Monitor until the web page exists; saved in flash)
-    V 231.5     the multimeter reads 231.5 V: the voltage gain is corrected to match
-    I 4.20      the clamp meter reads 4.20 A with a kettle or heater on: the current trim is corrected
-    Z           measure the idle current noise (unplug the load first)
-    F           flip the current direction (if power reads negative on a kettle)
-    D           back to the default calibration
-    ?           print the calibration
+  CALIBRATION (Serial Monitor; saved in flash)
+    V 231.5     the multimeter reads 231.5 V            I 4.20    the clamp meter reads 4.20 A (kettle on)
+    Z           idle current noise (nothing plugged in)  F         flip the current direction
+    D           default calibration                      ?         print the calibration
 */
 
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <DNSServer.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
 #include <Preferences.h>
 #include "BaiJamjuree.h"     // Bai Jamjuree in three sizes (BaiS, BaiM, BaiL)
+#include "web_index.h"       // the web page, gzip, made by tools/embed_web.py
 
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.2.0"
 
 // ---------------- types (kept above every function: the IDE adds its function declarations just
 // before the first function, and they must already see these) ----------------
-enum State { ARMED, TRIPPING, TRIPPED, WAITING };
-enum Reason { R_NONE, R_OV, R_UV, R_OC, R_UC };
-enum Page { HOME, GRAPH, TRIPS, LIMITS, INFO, PAGES };
+enum State { ARMED, TRIPPING, TRIPPED, WAITING, MANUAL_OFF };
+enum Reason { R_NONE, R_OV, R_UV, R_OC, R_OP };
+enum Page { HOME, GRAPH, TRIPS, LIMITS, CONNECT, PAGES };
 struct Trip { Reason r; float val; uint32_t at; };
+struct Limits { float ovv, uvv, ocv, opp; };
 // declared here with their default arguments, so the IDE does not generate its own declarations
 void text(const char *s, int x, int y, uint16_t col, const GFXfont *f = nullptr);
 int  textW(const char *s, const GFXfont *f = nullptr);
@@ -61,17 +72,18 @@ const int TFT_SDA = 19, TFT_SCK = 18;   // SPI data (MOSI) and clock: any free G
 const int PIN_V = 34, PIN_I = 35;
 const int PIN_BTN = 13, PIN_BUZ = 25, PIN_RELAY = 26, PIN_LED_G = 32, PIN_LED_R = 33;
 
-// ---------------- protection settings (GridGuard defaults; the web page will make them editable) ----------------
-float OVV = 250;              // over-voltage, V
-float UVV = 190;              // under-voltage, V
-float OCV = 6.0;              // over-current, A (keep at 7 A or below: 10 A relay, 6 A socket)
-float UCV = 0.5;              // under-current, A (only if UC_ON)
-bool  UC_ON = false;
+// ---------------- WiFi ----------------
+const char *WIFI_SSID = "GridGuard";
+const char *WIFI_PASS = "gridguard";    // WPA2: at least 8 characters
+
+// ---------------- protection settings (limits set from the web page, saved in flash) ----------------
+const Limits LIM_DEF = { 250, 190, 6.0, 1300 };
+const Limits LIM_MIN = { 200, 150, 0.5, 50 };
+const Limits LIM_MAX = { 280, 220, 7.0, 1600 };   // 7 A / 1600 W: 10 A relay, 6 A socket
+Limits LIM = LIM_DEF;
 float TRIP_DELAY_S = 2;       // a fault must last this long
 float RESTART_S = 10;         // wait after a trip (and at power-up) before closing the relay
 float HYST = 0.02;            // voltage counts as normal again inside OVV x 0.98 and UVV x 1.02
-bool  AUTO_RECONNECT = true;  // false: after a trip, wait for a 2 s button hold
-const uint32_t UC_IGNORE_MS = 1500;   // after closing the relay, ignore under-current for this long
 const uint32_t TRIPPED_SHOW_MS = 3000;
 
 // ---------------- calibration (defaults; the live values are in flash) ----------------
@@ -89,45 +101,55 @@ const int      N = 1600;       // 1600 samples at 8 kHz = 200 ms = 10 mains cycl
 const uint32_t TS_US = 125;
 uint16_t vr[N], ir[N];
 
-// ---------------- display ----------------
+// ---------------- display, web, flash ----------------
 const int W = 128, H = 160;
 Adafruit_ST7735 tft(TFT_CS, TFT_DC, TFT_RST);
 GFXcanvas16     cv(W, H);
 Preferences     prefs;
+AsyncWebServer  server(80);
+DNSServer       dns;
 
+// GridGuard palette (the web page uses the same): amber brand, periwinkle volts, rose amps, mint watts
 #define rgb(c) ((uint16_t)((((c) >> 8) & 0xF800) | (((c) >> 5) & 0x07E0) | (((c) >> 3) & 0x001F)))
-const uint16_t BG = rgb(0x0F1115), CARD = rgb(0x1D212A), LINE = rgb(0x2A303C);
-const uint16_t FG = rgb(0xFFFFFF), FG2 = rgb(0xA7AFBD), MUTED = rgb(0x8A93A3);
-const uint16_t VOLT = rgb(0x35D0FF), AMP = rgb(0xFF8A3D), POW = rgb(0xB6F24A);
-const uint16_t OK_GREEN = rgb(0x3DDC84), WARN = rgb(0xFFB020), BAD = rgb(0xFF4D4D), BAD_DIM = rgb(0x8A1F1F), WAIT = rgb(0x4DA3FF);
+const uint16_t BG = rgb(0x0D0E11), CARD = rgb(0x1F2128), LINE = rgb(0x2C2F38);
+const uint16_t FG = rgb(0xFFFFFF), FG2 = rgb(0xB4B8C2), MUTED = rgb(0x8C909B);
+const uint16_t BRAND = rgb(0xFFC233);
+const uint16_t VOLT = rgb(0x8FA8FF), AMP = rgb(0xFF8FA3), POW = rgb(0x47E5BC);
+const uint16_t OK_GREEN = rgb(0x3DDC84), WARN = rgb(0xFF9F1C), BAD = rgb(0xFF4D4D), BAD_DIM = rgb(0x8A1F1F), WAIT = rgb(0x4DA3FF), OFFGREY = rgb(0x6B7080);
 const uint16_t SAFE_BAND = rgb(0x1E3A2A);
 
-const char *REASON_LONG[]  = { "Power-up", "Over-voltage", "Under-voltage", "Over-current", "Under-current" };
-const char *REASON_SHORT[] = { "START", "OVER-V", "UNDER-V", "OVER-I", "UNDER-I" };
+const char *REASON_LONG[]  = { "Power-up", "Over-voltage", "Under-voltage", "Over-current", "Over-power" };
+const char *REASON_SHORT[] = { "START", "OVER-V", "UNDER-V", "OVER-I", "OVER-P" };
+const char *STATE_NAME[]   = { "ARMED", "TRIPPING", "TRIPPED", "WAITING", "OFF" };
 
 // ---------------- live state ----------------
 float    V = 0, I = 0, P = 0, PF = 0;     // last good measurement
 float    rawI = 0, rawPF = 0;             // before the noise correction (for zeroing)
-float    midV = 0, midI = 0;              // DC midpoints in mV (for the Info screen)
 uint32_t badWindows = 0, goodWindows = 0;
 
 State    st = WAITING;                    // power-up counts as a wait before the first close
 uint32_t stAt = 0;
-Reason   pending = R_NONE;
+Reason   pending = R_NONE;                // fault being timed while TRIPPING
 Reason   waitReason = R_NONE;             // what the current wait is for (R_NONE = power-up)
 bool     relayOn = false;
 uint32_t relayOnAt = 0, relaySwitches = 0;
 
-Trip     trips[3];                        // newest first
+const int TRIPS_KEPT = 10;
+Trip     trips[TRIPS_KEPT];               // newest first, RAM only
 int      tripCount = 0;
 
-const int HN = 60;                        // graph: 60 s, one point per second
-float    hv[HN], hi[HN];
+const int HN = 60;                        // 60 s history, one point per second
+float    hv[HN], hi[HN], hp[HN];
 int      hHead = 0, hCount = 0;
 
 int      page = HOME;
 char     toast[32] = "";
 uint32_t toastUntil = 0;
+
+// requests from the web page, applied in loop()
+volatile bool limPending = false;
+Limits        limNext;
+volatile int  relayCmd = -1;              // -1 none, 0 off, 1 on
 
 // button (polled, also from inside the 200 ms sampling loop so presses are never missed)
 bool     btnRaw = false, btnStable = false, btnLongFired = false;
@@ -200,12 +222,12 @@ bool measure() {
     while ((int32_t)(micros() - t) < 0) { }
   }
   float elapsedUs = (float)(micros() - start);
+  // a WiFi interrupt can stretch the window; skip it rather than act on a wrong value
   if (elapsedUs < 196000.0f || elapsedUs > 204000.0f) { badWindows++; return false; }
 
   double vm = 0, im = 0;
   for (int k = 0; k < N; k++) { vm += vr[k]; im += ir[k]; }
   vm /= N; im /= N;
-  midV = vm; midI = im;
 
   const double IPM = (1.0 / (DIV * SENS_MV_PER_A)) * I_TRIM;
   double v2 = 0, i2 = 0, pSum = 0;
@@ -235,20 +257,20 @@ bool measure() {
 
 // ---------------- protection state machine ----------------
 void recordTrip(Reason r, float val, uint32_t now) {
-  for (int k = 2; k > 0; k--) trips[k] = trips[k - 1];
+  for (int k = TRIPS_KEPT - 1; k > 0; k--) trips[k] = trips[k - 1];
   trips[0] = { r, val, now };
   tripCount++;
 }
 
-bool voltageInBand() { return V <= OVV * (1 - HYST) && V >= UVV * (1 + HYST); }
+bool voltageInBand() { return V <= LIM.ovv * (1 - HYST) && V >= LIM.uvv * (1 + HYST); }
 
 void updateState(uint32_t now) {
   Reason f = R_NONE;
   float fv = 0;
-  if (V > OVV) { f = R_OV; fv = V; }
-  else if (V < UVV) { f = R_UV; fv = V; }
-  else if (relayOn && I > OCV) { f = R_OC; fv = I; }
-  else if (UC_ON && relayOn && now - relayOnAt > UC_IGNORE_MS && I < UCV) { f = R_UC; fv = I; }
+  if (V > LIM.ovv) { f = R_OV; fv = V; }
+  else if (V < LIM.uvv) { f = R_UV; fv = V; }
+  else if (relayOn && I > LIM.ocv) { f = R_OC; fv = I; }
+  else if (relayOn && fabs(P) > LIM.opp) { f = R_OP; fv = fabs(P); }
 
   switch (st) {
     case ARMED:
@@ -266,7 +288,7 @@ void updateState(uint32_t now) {
       }
       break;
     case TRIPPED:
-      if (AUTO_RECONNECT && now - stAt >= TRIPPED_SHOW_MS) { st = WAITING; stAt = now; }
+      if (now - stAt >= TRIPPED_SHOW_MS) { st = WAITING; stAt = now; }
       break;
     case WAITING:
       if (!voltageInBand()) stAt = now;            // the countdown runs only while the supply is good
@@ -277,10 +299,29 @@ void updateState(uint32_t now) {
         Serial.println("[relay] closed");
       }
       break;
+    case MANUAL_OFF:
+      break;                                       // stays off until turned on by hand
   }
 }
 
-void handleButton(uint32_t now) {
+// Turns the relay on by hand (button hold or web page). Returns nullptr, or why it was refused.
+const char *manualOn() {
+  if (relayOn) return nullptr;
+  if (!voltageInBand()) return "Supply out of range";
+  setRelay(true);
+  st = ARMED;
+  beep(1, 60, 0);
+  Serial.println("[relay] on by hand");
+  return nullptr;
+}
+void manualOff() {
+  setRelay(false);
+  st = MANUAL_OFF;
+  beep(1, 60, 0);
+  Serial.println("[relay] off by hand");
+}
+
+void handleButton() {
   if (evShort) {
     evShort = false;
     page = (page + 1) % PAGES;
@@ -288,20 +329,41 @@ void handleButton(uint32_t now) {
   }
   if (evLong) {
     evLong = false;
-    if (st == TRIPPED || st == WAITING) {
-      if (voltageInBand()) {
-        setRelay(true); st = ARMED;
-        beep(1, 60, 0);
-        showToast("Reset: relay on");
-        Serial.println("[button] reset, relay closed");
-      } else {
-        beep(2, 60, 60);
-        showToast("Supply out of range");
-      }
-    } else {
-      showToast("Hold resets a trip");
+    if (relayOn) { manualOff(); showToast("Relay off (manual)"); }
+    else {
+      const char *e = manualOn();
+      if (e) { beep(2, 60, 60); showToast(e); }
+      else showToast("Relay on");
     }
   }
+}
+
+// Requests from the web page, applied here between two measuring windows.
+void handleWeb() {
+  if (limPending) {
+    limPending = false;
+    LIM = limNext;
+    prefs.putBytes("limits", &LIM, sizeof(LIM));
+    Serial.printf("[limits] OVV %.0f V  UVV %.0f V  OCV %.2f A  OPP %.0f W, saved\n", LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp);
+    showToast("Limits saved");
+  }
+  int cmd = relayCmd;
+  if (cmd >= 0) {
+    relayCmd = -1;
+    if (cmd == 1) { const char *e = manualOn(); showToast(e ? e : "Relay on (web)"); }
+    else { manualOff(); showToast("Relay off (web)"); }
+  }
+}
+
+// Checks limits typed on the page. Returns nullptr if they are fine, otherwise the message to show.
+const char *checkLimits(const Limits &l) {
+  static char e[64];
+  if (!(l.ovv >= LIM_MIN.ovv && l.ovv <= LIM_MAX.ovv)) { snprintf(e, sizeof(e), "Over-voltage must be %.0f to %.0f V", LIM_MIN.ovv, LIM_MAX.ovv); return e; }
+  if (!(l.uvv >= LIM_MIN.uvv && l.uvv <= LIM_MAX.uvv)) { snprintf(e, sizeof(e), "Under-voltage must be %.0f to %.0f V", LIM_MIN.uvv, LIM_MAX.uvv); return e; }
+  if (l.ovv - l.uvv < 20) return "Over-voltage must be at least 20 V above under-voltage";
+  if (!(l.ocv >= LIM_MIN.ocv && l.ocv <= LIM_MAX.ocv)) { snprintf(e, sizeof(e), "Over-current must be %.1f to %.1f A", LIM_MIN.ocv, LIM_MAX.ocv); return e; }
+  if (!(l.opp >= LIM_MIN.opp && l.opp <= LIM_MAX.opp)) { snprintf(e, sizeof(e), "Over-power must be %.0f to %.0f W", LIM_MIN.opp, LIM_MAX.opp); return e; }
+  return nullptr;
 }
 
 // ---------------- calibration over Serial ----------------
@@ -348,6 +410,135 @@ void serialCommands() {
   }
 }
 
+// ---------------- web server ----------------
+static void sendJson(AsyncWebServerRequest *req, const char *b) {
+  AsyncWebServerResponse *r = req->beginResponse(200, "application/json", b);
+  r->addHeader("Cache-Control", "no-store");
+  req->send(r);
+}
+static void sendErr(AsyncWebServerRequest *req, const char *msg) {
+  char b[160];
+  snprintf(b, sizeof(b), "{\"ok\":0,\"err\":\"%s\"}", msg);
+  sendJson(req, b);
+}
+static float param(AsyncWebServerRequest *req, const char *k, float def) {
+  return req->hasParam(k) ? req->getParam(k)->value().toFloat() : def;
+}
+// seconds left on the current countdown, -1 if none
+int countdownLeft(uint32_t now) {
+  if (st == TRIPPING) return (int)ceil(max(0.0f, TRIP_DELAY_S - (now - stAt) / 1000.0f));
+  if (st == WAITING && voltageInBand()) return (int)ceil(max(0.0f, RESTART_S - (now - stAt) / 1000.0f));
+  return -1;
+}
+
+void dnsTask(void *) {
+  for (;;) { dns.processNextRequest(); vTaskDelay(pdMS_TO_TICKS(5)); }
+}
+
+void setupWeb() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(WIFI_SSID, WIFI_PASS, 6, 0, 4);
+  WiFi.setSleep(false);
+  // phones probe for internet; answer every name with our address and the probes with "online"
+  dns.setErrorReplyCode(DNSReplyCode::NoError);
+  dns.start(53, "*", WiFi.softAPIP());
+  xTaskCreatePinnedToCore(dnsTask, "dns", 3072, nullptr, 1, nullptr, 0);
+  Serial.printf("[WiFi] AP '%s' (password %s) up -> open http://%s\n", WIFI_SSID, WIFI_PASS, WiFi.softAPIP().toString().c_str());
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (req->hasHeader("If-None-Match") && req->header("If-None-Match") == INDEX_HTML_ETAG) {
+      AsyncWebServerResponse *r = req->beginResponse(304);
+      r->addHeader("ETag", INDEX_HTML_ETAG);
+      req->send(r);
+      return;
+    }
+    AsyncWebServerResponse *r = req->beginResponse(200, "text/html", INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
+    r->addHeader("Content-Encoding", "gzip");
+    r->addHeader("Cache-Control", "no-cache");
+    r->addHeader("ETag", INDEX_HTML_ETAG);
+    req->send(r);
+  });
+
+  server.on("/data", HTTP_GET, [](AsyncWebServerRequest *req) {
+    uint32_t now = millis();
+    char b[512];
+    snprintf(b, sizeof(b),
+             "{\"v\":%.1f,\"i\":%.3f,\"p\":%.1f,\"pf\":%.3f,\"st\":\"%s\",\"relay\":%d,\"left\":%d,\"why\":\"%s\","
+             "\"ovv\":%.0f,\"uvv\":%.0f,\"ocv\":%.2f,\"opp\":%.0f,\"td\":%.0f,\"rd\":%.0f,"
+             "\"trips\":%d,\"up\":%lu,\"fw\":\"%s\"}",
+             V, I, fabs(P), PF, STATE_NAME[st], relayOn ? 1 : 0, countdownLeft(now),
+             (st == TRIPPED || st == WAITING || st == TRIPPING) ? REASON_LONG[st == TRIPPING ? pending : waitReason] : "",
+             LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp, TRIP_DELAY_S, RESTART_S,
+             tripCount, (unsigned long)(now / 1000), FW_VERSION);
+    sendJson(req, b);
+  });
+
+  server.on("/history", HTTP_GET, [](AsyncWebServerRequest *req) {
+    AsyncResponseStream *r = req->beginResponseStream("application/json");
+    r->addHeader("Cache-Control", "no-store");
+    const float *rings[] = { hv, hi, hp };
+    const char *names[] = { "v", "i", "p" };
+    r->print("{\"dt\":1");
+    for (int s = 0; s < 3; s++) {
+      r->printf(",\"%s\":[", names[s]);
+      for (int k = 0; k < hCount; k++) {
+        int idx = (hHead - hCount + k + HN) % HN;
+        if (k) r->print(',');
+        r->printf(s == 1 ? "%.3f" : "%.1f", rings[s][idx]);
+      }
+      r->print("]");
+    }
+    r->print("}");
+    req->send(r);
+  });
+
+  server.on("/trips", HTTP_GET, [](AsyncWebServerRequest *req) {
+    uint32_t now = millis();
+    AsyncResponseStream *r = req->beginResponseStream("application/json");
+    r->addHeader("Cache-Control", "no-store");
+    r->printf("{\"total\":%d,\"list\":[", tripCount);
+    int n = min(tripCount, TRIPS_KEPT);
+    for (int k = 0; k < n; k++) {
+      const Trip &t = trips[k];
+      bool amps = t.r == R_OC, watts = t.r == R_OP;
+      if (k) r->print(',');
+      r->printf("{\"why\":\"%s\",\"val\":%.2f,\"unit\":\"%s\",\"ago\":%lu}", REASON_LONG[t.r], t.val,
+                amps ? "A" : (watts ? "W" : "V"), (unsigned long)((now - t.at) / 1000));
+    }
+    r->print("]}");
+    req->send(r);
+  });
+
+  server.on("/limits", HTTP_POST, [](AsyncWebServerRequest *req) {
+    Limits l = { param(req, "ovv", LIM.ovv), param(req, "uvv", LIM.uvv), param(req, "ocv", LIM.ocv), param(req, "opp", LIM.opp) };
+    const char *e = checkLimits(l);
+    if (e) { sendErr(req, e); return; }
+    limNext = l;
+    limPending = true;      // applied and saved in loop()
+    sendJson(req, "{\"ok\":1}");
+  });
+
+  server.on("/relay", HTTP_POST, [](AsyncWebServerRequest *req) {
+    int on = (int)param(req, "on", -1);
+    if (on != 0 && on != 1) { sendErr(req, "on must be 0 or 1"); return; }
+    if (on == 1 && !relayOn && !voltageInBand()) { sendErr(req, "Supply out of range, relay stays off"); return; }
+    relayCmd = on;          // applied in loop()
+    sendJson(req, "{\"ok\":1}");
+  });
+
+  // captive-portal probes: say "internet OK" so phones stay on this WiFi
+  auto online204 = [](AsyncWebServerRequest *req) { req->send(204); };
+  server.on("/generate_204", HTTP_GET, online204);
+  server.on("/gen_204", HTTP_GET, online204);
+  server.on("/hotspot-detect.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+  });
+  server.on("/connecttest.txt", HTTP_GET, [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "Microsoft Connect Test"); });
+  server.on("/ncsi.txt", HTTP_GET, [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "Microsoft NCSI"); });
+  server.onNotFound([](AsyncWebServerRequest *req) { req->redirect("http://192.168.4.1/"); });
+  server.begin();
+}
+
 // ---------------- drawing helpers ----------------
 // f = nullptr means the small font, and then y is the top of the capitals; for BaiM and BaiL y is the baseline
 void text(const char *s, int x, int y, uint16_t col, const GFXfont *f) {
@@ -369,8 +560,14 @@ const char *ago(uint32_t ms, char *b, size_t n) {
   else snprintf(b, n, "%lu h ago", (unsigned long)(s / 3600));
   return b;
 }
+const char *tripValue(const Trip &t, char *b, size_t n) {
+  if (t.r == R_OC) snprintf(b, n, "%s %.1fA", REASON_SHORT[t.r], t.val);
+  else if (t.r == R_OP) snprintf(b, n, "%s %.0fW", REASON_SHORT[t.r], t.val);
+  else snprintf(b, n, "%s %.0fV", REASON_SHORT[t.r], t.val);
+  return b;
+}
 void pageTitle(const char *t) {
-  text(t, 4, 4, FG);
+  text(t, 4, 4, BRAND);
   for (int p = 1; p < PAGES; p++) {
     int x = W - 6 - (PAGES - 1 - p) * 7;
     if (p == page) cv.fillCircle(x, 7, 2, FG); else cv.drawCircle(x, 7, 2, MUTED);
@@ -382,6 +579,7 @@ void pageTitle(const char *t) {
 void statusBar(uint32_t now) {
   uint16_t bg = OK_GREEN;
   char s[24] = "ARMED";
+  int left = countdownLeft(now);
   if (st == TRIPPING) {
     bg = WARN;
     snprintf(s, sizeof(s), "TRIP IN %.1fs", max(0.0f, TRIP_DELAY_S - (now - stAt) / 1000.0f));
@@ -390,57 +588,57 @@ void statusBar(uint32_t now) {
     strcpy(s, "TRIPPED");
   } else if (st == WAITING) {
     bg = WAIT;
-    if (voltageInBand()) snprintf(s, sizeof(s), "%s %ds", waitReason ? "WAITING" : "STARTING",
-                                  (int)ceil(max(0.0f, RESTART_S - (now - stAt) / 1000.0f)));
+    if (left >= 0) snprintf(s, sizeof(s), "%s %ds", waitReason ? "WAITING" : "STARTING", left);
     else strcpy(s, "BAD SUPPLY");
+  } else if (st == MANUAL_OFF) {
+    bg = OFFGREY;
+    strcpy(s, "OFF (MANUAL)");
   }
   cv.fillRect(0, 0, W, 22, bg);
-  textC(s, 16, bg == BAD_DIM ? FG : BG, &BaiM);
+  textC(s, 16, (bg == BAD_DIM || bg == OFFGREY) ? FG : BG, &BaiM);
 }
 void meterV(int y) {
-  const float lo = UVV - 20, hi = OVV + 20;
+  const float lo = LIM.uvv - 20, hi = LIM.ovv + 20;
   auto X = [&](float v) { return 4 + (int)((constrain(v, lo, hi) - lo) / (hi - lo) * (W - 8)); };
   cv.fillRect(4, y, W - 8, 6, CARD);
-  cv.fillRect(X(UVV), y, X(OVV) - X(UVV), 6, SAFE_BAND);
-  cv.drawFastVLine(X(UVV), y - 2, 10, BAD);
-  cv.drawFastVLine(X(OVV), y - 2, 10, BAD);
-  cv.fillRect(X(V) - 1, y - 3, 3, 12, (V > OVV || V < UVV) ? BAD : FG);
+  cv.fillRect(X(LIM.uvv), y, X(LIM.ovv) - X(LIM.uvv), 6, SAFE_BAND);
+  cv.drawFastVLine(X(LIM.uvv), y - 2, 10, BAD);
+  cv.drawFastVLine(X(LIM.ovv), y - 2, 10, BAD);
+  cv.fillRect(X(V) - 1, y - 3, 3, 12, (V > LIM.ovv || V < LIM.uvv) ? BAD : FG);
   char b[8];
-  snprintf(b, sizeof(b), "%.0f", UVV); text(b, X(UVV) - textW(b) / 2, y + 10, MUTED);
-  snprintf(b, sizeof(b), "%.0f", OVV); text(b, X(OVV) - textW(b) / 2, y + 10, MUTED);
+  snprintf(b, sizeof(b), "%.0f", LIM.uvv); text(b, X(LIM.uvv) - textW(b) / 2, y + 10, MUTED);
+  snprintf(b, sizeof(b), "%.0f", LIM.ovv); text(b, X(LIM.ovv) - textW(b) / 2, y + 10, MUTED);
 }
 void meterI(int y) {
-  const float hi = OCV * 1.25f;
+  const float hi = LIM.ocv * 1.25f;
   auto X = [&](float v) { return 4 + (int)(constrain(v, 0.0f, hi) / hi * (W - 8)); };
   cv.fillRect(4, y, W - 8, 6, CARD);
-  uint16_t c = I > OCV ? BAD : (I > OCV * 0.9f ? WARN : AMP);
+  uint16_t c = I > LIM.ocv ? BAD : (I > LIM.ocv * 0.9f ? WARN : AMP);
   if (I > 0) cv.fillRect(4, y, X(I) - 4, 6, c);
-  cv.drawFastVLine(X(OCV), y - 2, 10, BAD);
+  cv.drawFastVLine(X(LIM.ocv), y - 2, 10, BAD);
   char b[8];
   text("0", 4, y + 9, MUTED);
-  snprintf(b, sizeof(b), "%.1f", OCV); text(b, X(OCV) - textW(b) / 2, y + 9, MUTED);
+  snprintf(b, sizeof(b), "%.1f", LIM.ocv); text(b, X(LIM.ocv) - textW(b) / 2, y + 9, MUTED);
 }
 void drawHome(uint32_t now) {
   char b[32];
   statusBar(now);
   text("VOLTAGE", 4, 25, MUTED);
   snprintf(b, sizeof(b), "%.1f", V);
-  text(b, 4, 60, (V > OVV || V < UVV) ? BAD : VOLT, &BaiL);
+  text(b, 4, 60, (V > LIM.ovv || V < LIM.uvv) ? BAD : VOLT, &BaiL);
   textR("V", W - 4, 60, FG2, &BaiM);
   meterV(65);
   text("CURRENT", 4, 88, MUTED);
   snprintf(b, sizeof(b), "%.2f", I);
-  text(b, 4, 122, I > OCV ? BAD : AMP, &BaiL);
+  text(b, 4, 122, I > LIM.ocv ? BAD : AMP, &BaiL);
   textR("A", W - 4, 122, FG2, &BaiM);
   meterI(127);
   cv.drawFastHLine(0, 148, W, LINE);
-  if ((st == TRIPPED || st == WAITING) && waitReason != R_NONE) {
-    const Trip &t = trips[0];
-    snprintf(b, sizeof(b), (t.r == R_OC || t.r == R_UC) ? "%s %.1fA" : "%s %.0fV", REASON_SHORT[t.r], t.val);
-    text(b, 4, 151, BAD);
+  if ((st == TRIPPED || st == WAITING) && waitReason != R_NONE && tripCount) {
+    text(tripValue(trips[0], b, sizeof(b)), 4, 151, BAD);
   } else {
     snprintf(b, sizeof(b), "%.0f W", fabs(P));
-    text(b, 4, 151, POW);
+    text(b, 4, 151, fabs(P) > LIM.opp ? BAD : POW);
   }
   textR(relayOn ? "RELAY ON" : "OFF", W - 4, 151, relayOn ? OK_GREEN : BAD);
 }
@@ -469,12 +667,12 @@ void drawGraph() {
   pageTitle("LAST 60 s");
   snprintf(b, sizeof(b), "VOLTAGE  %.1f V", V);
   text(b, 4, 20, VOLT);
-  float vl[] = { OVV, UVV };
-  chart(30, 54, hv, UVV - 25, OVV + 25, VOLT, vl, 2);
+  float vl[] = { LIM.ovv, LIM.uvv };
+  chart(30, 54, hv, LIM.uvv - 25, LIM.ovv + 25, VOLT, vl, 2);
   snprintf(b, sizeof(b), "CURRENT  %.2f A", I);
   text(b, 4, 92, AMP);
-  float il[] = { OCV };
-  chart(102, 54, hi, 0, OCV * 1.3f, AMP, il, 1);
+  float il[] = { LIM.ocv };
+  chart(102, 54, hi, 0, LIM.ocv * 1.3f, AMP, il, 1);
 }
 
 // ---------------- screen 3: Trips ----------------
@@ -485,18 +683,18 @@ void drawTrips(uint32_t now) {
   const Trip &t = trips[0];
   text("LAST TRIP", 4, 21, MUTED);
   text(REASON_LONG[t.r], 4, 46, BAD, &BaiM);
-  snprintf(b, sizeof(b), (t.r == R_OC || t.r == R_UC) ? "%.1f A for %.0f s" : "%.0f V for %.0f s", t.val, TRIP_DELAY_S);
+  if (t.r == R_OC) snprintf(b, sizeof(b), "%.1f A for %.0f s", t.val, TRIP_DELAY_S);
+  else if (t.r == R_OP) snprintf(b, sizeof(b), "%.0f W for %.0f s", t.val, TRIP_DELAY_S);
+  else snprintf(b, sizeof(b), "%.0f V for %.0f s", t.val, TRIP_DELAY_S);
   text(b, 4, 53, FG);
   text(ago(now - t.at, a, sizeof(a)), 4, 65, FG2);
   cv.drawFastHLine(0, 78, W, LINE);
   snprintf(b, sizeof(b), "Trips total: %d", tripCount);
   text(b, 4, 84, FG);
   int y = 100;
-  for (int k = 1; k < 3 && k < tripCount; k++, y += 14) {
-    const Trip &o = trips[k];
-    snprintf(b, sizeof(b), (o.r == R_OC || o.r == R_UC) ? "%s %.1fA" : "%s %.0fV", REASON_SHORT[o.r], o.val);
-    text(b, 4, y, FG2);
-    uint32_t sec = (now - o.at) / 1000;
+  for (int k = 1; k < 4 && k < tripCount && k < TRIPS_KEPT; k++, y += 14) {
+    text(tripValue(trips[k], b, sizeof(b)), 4, y, FG2);
+    uint32_t sec = (now - trips[k].at) / 1000;
     if (sec < 60) snprintf(a, sizeof(a), "%lus", (unsigned long)sec);
     else if (sec < 3600) snprintf(a, sizeof(a), "%lum", (unsigned long)(sec / 60));
     else snprintf(a, sizeof(a), "%luh", (unsigned long)(sec / 3600));
@@ -513,31 +711,32 @@ void row(int y, const char *label, const char *val, uint16_t col) {
 void drawLimits() {
   char b[16];
   pageTitle("LIMITS");
-  snprintf(b, sizeof(b), "%.0f V", OVV);          row(22, "Over-voltage", b, VOLT);
-  snprintf(b, sizeof(b), "%.0f V", UVV);          row(40, "Under-voltage", b, VOLT);
-  snprintf(b, sizeof(b), "%.1f A", OCV);          row(58, "Over-current", b, AMP);
-  if (UC_ON) snprintf(b, sizeof(b), "%.1f A", UCV); else strcpy(b, "off");
-  row(76, "Under-current", b, UC_ON ? AMP : MUTED);
+  snprintf(b, sizeof(b), "%.0f V", LIM.ovv);      row(22, "Over-voltage", b, VOLT);
+  snprintf(b, sizeof(b), "%.0f V", LIM.uvv);      row(40, "Under-voltage", b, VOLT);
+  snprintf(b, sizeof(b), "%.1f A", LIM.ocv);      row(58, "Over-current", b, AMP);
+  snprintf(b, sizeof(b), "%.0f W", LIM.opp);      row(76, "Over-power", b, POW);
   snprintf(b, sizeof(b), "%.0f s", TRIP_DELAY_S); row(94, "Trip delay", b, FG);
   snprintf(b, sizeof(b), "%.0f s", RESTART_S);    row(112, "Restart delay", b, FG);
-  row(130, "After a trip", AUTO_RECONNECT ? "AUTO" : "HOLD", FG);
-  textC("Hold button 2 s to reset", 148, MUTED);
+  row(130, "After a trip", "AUTO", FG);
+  textC("Edit on the web page", 148, MUTED);
 }
 
-// ---------------- screen 5: Info ----------------
-void drawInfo(uint32_t now) {
+// ---------------- screen 5: Connect ----------------
+void drawConnect() {
   char b[32];
-  pageTitle("INFO");
-  uint32_t s = now / 1000;
-  snprintf(b, sizeof(b), "%luh %02lum %02lus", (unsigned long)(s / 3600), (unsigned long)(s / 60 % 60), (unsigned long)(s % 60));
-  row(22, "Up for", b, FG);
-  snprintf(b, sizeof(b), "%.2f", PF);              row(40, "Power factor", b, POW);
-  snprintf(b, sizeof(b), "%lu", (unsigned long)relaySwitches); row(58, "Relay switches", b, FG);
-  snprintf(b, sizeof(b), "%.0f / %.0f", midV, midI); row(76, "Mid mV", b, FG2);
-  snprintf(b, sizeof(b), "%.3f", V_GAIN);          row(94, "Voltage gain", b, FG2);
-  snprintf(b, sizeof(b), "%.3f", I_TRIM);          row(112, "Current trim", b, FG2);
-  row(130, "Firmware", FW_VERSION, FG2);
-  textC("WiFi: next version", 148, MUTED);
+  pageTitle("CONNECT");
+  text("WiFi", 4, 22, MUTED);
+  text(WIFI_SSID, 4, 44, FG, &BaiM);
+  text("Password", 4, 52, MUTED);
+  text(WIFI_PASS, 4, 74, FG, &BaiM);
+  text("Then open", 4, 82, MUTED);
+  text("192.168.4.1", 4, 104, BRAND, &BaiM);
+  cv.drawFastHLine(0, 116, W, LINE);
+  snprintf(b, sizeof(b), "Phones connected: %d", WiFi.softAPgetStationNum());
+  text(b, 4, 122, FG2);
+  snprintf(b, sizeof(b), "Firmware %s", FW_VERSION);
+  text(b, 4, 136, MUTED);
+  text("Hold 2 s: relay on / off", 4, 149, MUTED);
 }
 
 // ---------------- frame ----------------
@@ -548,7 +747,7 @@ void render(uint32_t now) {
     case GRAPH:  drawGraph();    break;
     case TRIPS:  drawTrips(now); break;
     case LIMITS: drawLimits();   break;
-    default:     drawInfo(now);  break;
+    default:     drawConnect();  break;
   }
   if (toastUntil && (int32_t)(toastUntil - now) > 0) {
     cv.fillRoundRect(4, 132, W - 8, 24, 4, CARD);
@@ -576,6 +775,9 @@ void setup() {
   I_TRIM = prefs.getFloat("itrim", I_TRIM_DEF);
   I_NOISE = prefs.getFloat("inoise", I_NOISE_DEF);
   I_SIGN = prefs.getInt("isign", I_SIGN_DEF) < 0 ? -1 : 1;
+  Limits saved;
+  if (prefs.getBytesLength("limits") == sizeof(saved) && prefs.getBytes("limits", &saved, sizeof(saved)) == sizeof(saved)
+      && !checkLimits(saved)) LIM = saved;
 
   SPI.begin(TFT_SCK, -1, TFT_SDA, TFT_CS);   // hardware SPI on our pins (the library then keeps them)
   tft.initR(INITR_BLACKTAB);
@@ -583,11 +785,17 @@ void setup() {
   tft.setRotation(0);
   tft.fillScreen(BG);
   cv.setTextWrap(false);
+  cv.fillScreen(BG);
+  textC("GridGuard", 80, BRAND, &BaiM);
+  textC("starting WiFi...", 96, FG2);
+  tft.drawRGBBitmap(0, 0, cv.getBuffer(), W, H);
 
+  Serial.printf("\n=== GridGuard v%s ===\n", FW_VERSION);
+  setupWeb();
   st = WAITING; stAt = millis(); waitReason = R_NONE;
   beep(1, 80, 0);
-  Serial.printf("\n=== GridGuard v%s ===\n", FW_VERSION);
-  Serial.printf("Limits: OVV %.0f V, UVV %.0f V, OCV %.1f A, trip delay %.0f s, restart %.0f s\n", OVV, UVV, OCV, TRIP_DELAY_S, RESTART_S);
+  Serial.printf("Limits: OVV %.0f V, UVV %.0f V, OCV %.2f A, OPP %.0f W, trip delay %.0f s, restart %.0f s\n",
+                LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp, TRIP_DELAY_S, RESTART_S);
   printCal();
   Serial.println("Calibration commands: V <volts>, I <amps>, Z, F, D, ?");
 }
@@ -598,13 +806,14 @@ void loop() {
   uint32_t now = millis();
   buttonTick(now);
   buzzerTick(now);
+  handleWeb();
   updateState(now);
-  handleButton(now);
+  handleButton();
   ledsUpdate(now);
 
   if (now - lastHist >= 1000) {
     lastHist = now;
-    hv[hHead] = V; hi[hHead] = I;
+    hv[hHead] = V; hi[hHead] = I; hp[hHead] = fabs(P);
     hHead = (hHead + 1) % HN;
     if (hCount < HN) hCount++;
   }
@@ -612,8 +821,7 @@ void loop() {
 
   if (now - lastLog >= 1000) {
     lastLog = now;
-    const char *sn[] = { "ARMED", "TRIPPING", "TRIPPED", "WAITING" };
-    Serial.printf("V %.1f | I %.3f (raw %.3f) | P %.0f W | PF %.2f | %s | relay %s\n",
-                  V, I, rawI, P, PF, sn[st], relayOn ? "ON" : "OFF");
+    Serial.printf("V %.1f | I %.3f (raw %.3f) | P %.0f W | PF %.2f | %s | relay %s | clients %d\n",
+                  V, I, rawI, P, PF, STATE_NAME[st], relayOn ? "ON" : "OFF", WiFi.softAPgetStationNum());
   }
 }
