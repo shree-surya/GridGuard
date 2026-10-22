@@ -76,7 +76,7 @@ The 10k/20k dividers scale the 5 V sensor outputs to 3.3 V. The 10k goes from th
 
 **TFT 1.77" ST7735S:** VCC → 3V3, GND → GND, SCK → 23, SDA → 19, CS → 5, RST → 4, DC → 27, BLK → 3V3.
 
-**Push button:** one leg → GPIO13, the other → GND. No resistor: the firmware uses the ESP32's internal pull-up (reads LOW while pressed) and debounces it. On a 4-leg tactile switch use two diagonally opposite legs. Optional 100 nF across the button if its wires are long or run near mains. Short press: next screen. Hold 2 s: relay on (resets a trip) or off.
+**Push button:** one leg → GPIO13, the other → GND. No resistor: the firmware uses the ESP32's internal pull-up (reads LOW while pressed) and debounces it. On a 4-leg tactile switch use two diagonally opposite legs. Optional 100 nF across the button if its wires are long or run near mains. Short press: next screen. Hold 2 s: relay on (resets a trip; out-of-range supply = voltage override) or off.
 
 **Buzzer (5 V active):** + → 5V rail, − → NPN collector. NPN emitter → GND, base → 1k → GPIO25. BC547 legs, flat face towards you: C B E. 2N2222 (TO-92) flat face towards you: E B C.
 

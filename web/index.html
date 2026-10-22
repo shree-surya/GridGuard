@@ -79,6 +79,8 @@ canvas{width:100%;height:190px;display:block}
 .inp:focus-within{border-color:var(--brand)}
 .inp input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--fg);font:700 20px "Bai Jamjuree",system-ui,sans-serif;padding:9px 0}
 .inp span{color:var(--muted);font-size:14px}
+.inp input::-webkit-outer-spin-button,.inp input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.inp input[type=number]{-moz-appearance:textfield}
 .field small{display:block;font-size:11px;color:var(--muted);margin-top:3px}
 .actions{grid-column:1/-1;display:flex;gap:10px;align-items:center;margin-top:4px}
 .btn{padding:11px 20px;border-radius:10px;border:0;background:var(--brand);color:#1A1300;font:700 15px "Bai Jamjuree",system-ui,sans-serif;cursor:pointer}
@@ -96,6 +98,24 @@ canvas{width:100%;height:190px;display:block}
 .trips .v{font-weight:700}
 .trips .t{margin-left:auto;color:var(--muted);font-size:13px}
 .empty{color:var(--ok);padding:6px 0}
+/* calibration */
+details>summary{list-style:none;cursor:pointer;display:flex;align-items:center}
+details>summary::-webkit-details-marker{display:none}
+details>summary h2{margin:0;flex:1}
+details>summary::after{content:"+";font:700 22px "Bai Jamjuree",system-ui,sans-serif;color:var(--brand);line-height:1}
+details[open]>summary::after{content:"\2212"}
+details[open]>summary{margin-bottom:12px}
+.now{display:flex;gap:16px;flex-wrap:wrap;background:var(--card2);border-radius:10px;padding:10px 12px;font-size:13px;color:var(--fg2);margin-bottom:12px}
+.now b{font-size:16px}
+.cgroup{border-top:1px solid var(--line);padding:12px 0 4px}
+.cgroup h3{font-size:14px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.cgroup h3 i{width:10px;height:10px;border-radius:3px;background:var(--c)}
+.crow{display:flex;gap:8px;align-items:flex-end;margin-bottom:8px}
+.crow .field{flex:1;min-width:0}
+.crow .btn{padding:10px 14px;white-space:nowrap}
+.hint{font-size:12px;color:var(--muted);margin:-2px 0 8px}
+.cmsg{font-size:13px;min-height:18px;margin-top:4px}
+.cmsg.ok{color:var(--ok)}.cmsg.err{color:var(--bad)}.cmsg.run{color:var(--brand)}
 footer{text-align:center;color:var(--muted);font-size:12px;margin-top:6px}
 @media (max-width:380px){.tile .val{font-size:28px}.state{font-size:25px}.form{grid-template-columns:1fr}}
 </style>
@@ -181,6 +201,61 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:6px}
 </section>
 
 <section>
+<details id="calBox">
+  <summary><h2>Calibration</h2></summary>
+  <div class="now">
+    <span>Shows now <b class="num" id="cNowV">—</b> V</span>
+    <span><b class="num" id="cNowI">—</b> A</span>
+    <span>sensor <b class="num" id="cRawI">—</b> A before zero</span>
+  </div>
+
+  <div class="cgroup" style="--c:var(--volt)">
+    <h3><i></i>Voltage</h3>
+    <div class="crow">
+      <div class="field"><label for="vref">Multimeter reads</label>
+        <div class="inp"><input id="vref" type="number" inputmode="decimal" step="0.1" placeholder="231.5"><span>V</span></div></div>
+      <button class="btn" type="button" id="vrefBtn">Match</button>
+    </div>
+    <div class="hint">Measure the socket with a multimeter, type its reading and press Match. Sets the gain.</div>
+    <div class="crow">
+      <div class="field"><label for="vgain">Gain</label>
+        <div class="inp"><input id="vgain" type="number" inputmode="decimal" step="0.001"></div></div>
+      <div class="field"><label for="voff">Offset</label>
+        <div class="inp"><input id="voff" type="number" inputmode="decimal" step="0.1"><span>V</span></div></div>
+    </div>
+  </div>
+
+  <div class="cgroup" style="--c:var(--amp)">
+    <h3><i></i>Current</h3>
+    <div class="crow">
+      <div class="field"><label for="iref">Clamp meter reads</label>
+        <div class="inp"><input id="iref" type="number" inputmode="decimal" step="0.01" placeholder="4.20"><span>A</span></div></div>
+      <button class="btn" type="button" id="irefBtn">Match</button>
+    </div>
+    <div class="hint">Run a kettle or heater (at least 0.5 A), type the clamp meter reading and press Match.</div>
+    <div class="crow">
+      <div class="field"><label for="itrim">Trim</label>
+        <div class="inp"><input id="itrim" type="number" inputmode="decimal" step="0.001"></div></div>
+      <div class="field"><label for="inoise">Zero offset</label>
+        <div class="inp"><input id="inoise" type="number" inputmode="decimal" step="0.001"><span>A</span></div></div>
+    </div>
+    <div class="crow">
+      <button class="btn ghost" type="button" id="zeroBtn">Measure zero</button>
+      <button class="btn ghost" type="button" id="flipBtn">Flip direction</button>
+    </div>
+    <div class="hint">Measure zero with nothing plugged in (about 4 s). Flip direction if power reads wrong on a known load.</div>
+  </div>
+
+  <div class="actions" style="border-top:1px solid var(--line);padding-top:12px">
+    <button class="btn" type="button" id="calSave">Save values</button>
+    <button class="btn ghost" type="button" id="calDef">Defaults</button>
+  </div>
+  <div class="cmsg" id="calMsg"></div>
+  <div class="note">Saved in GridGuard's flash, kept after power cuts. Changes apply within a second.</div>
+</details>
+</section>
+
+<section>
   <h2>Trip log <small id="tripTotal"></small></h2>
   <ul class="trips" id="trips"><li class="empty">No trips yet</li></ul>
 </section>
@@ -229,7 +304,7 @@ const demo = {
     if (this.st === "WAITING" && this.t - this.stAt >= 10) { this.relay = 1; this.st = "ARMED"; }
     this.left = this.st === "WAITING" ? 10 - (this.t - this.stAt) : -1;
     return { v, i, p: v * i * pf, pf, st: this.st, relay: this.relay, left: this.left, why: this.why,
-      ...this.lim, td: 2, rd: 10, trips: this.trips.length, up: this.t, fw: "demo" };
+      ...this.lim, td: 2, rd: 10, trips: this.trips.length, up: this.t, fw: "demo", ovr: this.ovr || 0 };
   }
 };
 for (let k = 0; k < 4; k++) demo.trips.push({ why: ["Over-voltage", "Over-current", "Under-voltage", "Over-power"][k],
@@ -284,12 +359,13 @@ function pct(x, lo, hi) { return Math.max(0, Math.min(100, (x - lo) / (hi - lo) 
 function render() {
   const d = D;
   if (mode === "lost") return;
-  const s = STATES[d.st] || STATES.ARMED;
+  const s = (d.st === "ARMED" && d.ovr) ? { t: "Override", c: "--warn" } : (STATES[d.st] || STATES.ARMED);
   $("state").textContent = s.t;
   $("state").style.color = css(s.c);
   $("statusCard").style.borderColor = css(s.c);
   let why = "";
-  if (d.st === "ARMED") why = "Relay on, watching every limit";
+  if (d.st === "ARMED" && d.ovr) why = "Voltage limits paused until the supply is back in range. Current and power still protected";
+  else if (d.st === "ARMED") why = "Relay on, watching every limit";
   else if (d.st === "TRIPPING") why = d.why + " · cutting off in " + d.left + " s";
   else if (d.st === "TRIPPED") why = d.why + " · relay opened";
   else if (d.st === "WAITING") why = d.left >= 0 ? (d.why ? "After " + d.why.toLowerCase() + " · " : "Power-up · ") + "relay on in " + d.left + " s"
@@ -410,9 +486,12 @@ $("relayBtn").addEventListener("click", async () => {
   if (!D || busy) return;
   const on = D.relay ? 0 : 1;
   if (!on && !confirm("Turn the relay OFF? The socket loses power until you turn it on again.")) return;
+  const outOfRange = D.v > D.ovv * 0.98 || D.v < D.uvv * 1.02;
+  if (on && outOfRange && !confirm("The supply is " + fmt(D.v, 0) + " V, outside " + D.uvv + " to " + D.ovv +
+      " V.\n\nTurn ON anyway? Voltage protection is paused until the supply is back in range. Current and power protection stay on.")) return;
   $("relayMsg").textContent = "";
   if (mode === "demo") {
-    demo.relay = on; demo.st = on ? "ARMED" : "OFF"; demo.why = "";
+    demo.relay = on; demo.st = on ? "ARMED" : "OFF"; demo.why = ""; demo.ovr = on && outOfRange ? 1 : 0;
     return tick();
   }
   busy = true; $("relayBtn").disabled = true;
@@ -452,6 +531,81 @@ $("limForm").addEventListener("submit", async e => {
     else formMsg(r.err, "err");
   } catch (e) { formMsg("Could not reach GridGuard", "err"); }
   $("saveBtn").disabled = mode === "lost";
+});
+
+// ---------- calibration ----------
+const CF = ["vgain", "voff", "itrim", "inoise"];
+const CDEC = { vgain: 4, voff: 1, itrim: 4, inoise: 3 };
+let C = null, calDirty = false, calTimer = 0;
+const demoCal = { vgain: 0.946, voff: 0, itrim: 1, inoise: 0.195, isign: -1, zero: 0, zmsg: "" };
+function calMsg(t, c) { const m = $("calMsg"); m.textContent = t; m.className = "cmsg " + (c || ""); }
+function fillCal(c) { for (const k of CF) $(k).value = fmt(c[k], CDEC[k]); }
+for (const k of CF) $(k).addEventListener("input", () => { calDirty = true; calMsg("", ""); });
+async function loadCal() {
+  let c;
+  if (mode === "demo") c = Object.assign({ v: D ? D.v : 0, i: D ? D.i : 0, iraw: D ? Math.hypot(D.i, demoCal.inoise) : 0 }, demoCal);
+  else { try { c = await get("/cal"); } catch (e) { return; } }
+  C = c;
+  $("cNowV").textContent = fmt(c.v, 1); $("cNowI").textContent = fmt(c.i, 2); $("cRawI").textContent = fmt(c.iraw, 2);
+  $("flipBtn").textContent = "Flip direction (now " + (c.isign > 0 ? "+" : "−") + ")";
+  if (!calDirty) fillCal(c);
+  if (c.zero === 1) { calMsg(c.zmsg + "…", "run"); $("zeroBtn").disabled = true; }
+  else {
+    $("zeroBtn").disabled = false;
+    if (zeroWatch) { zeroWatch = false; calDirty = false; fillCal(c); calMsg(c.zmsg, c.zero === 2 ? "ok" : "err"); }
+  }
+}
+let zeroWatch = false;
+async function calPost(q, okText) {
+  if (mode === "lost") return calMsg("Not connected", "err");
+  if (mode === "demo") {
+    const p = new URLSearchParams(q);
+    if (p.has("defaults")) Object.assign(demoCal, { vgain: 0.946, voff: 0, itrim: 1, inoise: 0.195, isign: -1 });
+    else for (const [k, v] of p) if (k in demoCal) demoCal[k] = +v;
+    calDirty = false; calMsg(okText + " (demo)", "ok"); return loadCal();
+  }
+  try {
+    const r = await post("/cal?" + q);
+    if (!r.ok) return calMsg(r.err, "err");
+    calDirty = false; fillCal(r); calMsg(okText, "ok");
+    setTimeout(loadCal, 500);
+  } catch (e) { calMsg("Could not reach GridGuard", "err"); }
+}
+$("vrefBtn").addEventListener("click", () => {
+  const x = parseFloat($("vref").value);
+  if (!(x >= 150 && x <= 300)) return calMsg("Type the multimeter reading, 150 to 300 V", "err");
+  calPost("vref=" + x, "Voltage matched to " + x + " V and saved");
+});
+$("irefBtn").addEventListener("click", () => {
+  const x = parseFloat($("iref").value);
+  if (!(x >= 0.1 && x <= 10)) return calMsg("Type the clamp meter reading, 0.1 to 10 A", "err");
+  calPost("iref=" + x, "Current matched to " + x + " A and saved");
+});
+$("calSave").addEventListener("click", () => {
+  const v = {}; for (const k of CF) v[k] = parseFloat($(k).value);
+  if (CF.some(k => !isFinite(v[k]))) return calMsg("Fill in all four values", "err");
+  if (v.vgain < 0.5 || v.vgain > 1.5) return calMsg("Gain must be 0.5 to 1.5", "err");
+  if (v.voff < -30 || v.voff > 30) return calMsg("Offset must be −30 to 30 V", "err");
+  if (v.itrim < 0.5 || v.itrim > 2) return calMsg("Trim must be 0.5 to 2.0", "err");
+  if (v.inoise < 0 || v.inoise > 1) return calMsg("Zero offset must be 0 to 1.0 A", "err");
+  calPost(CF.map(k => k + "=" + v[k]).join("&"), "Calibration saved");
+});
+$("flipBtn").addEventListener("click", () => { if (C) calPost("isign=" + (-C.isign), "Direction flipped and saved"); });
+$("calDef").addEventListener("click", () => {
+  if (confirm("Put the calibration back to the defaults? The limits are not changed.")) calPost("defaults=1", "Defaults restored and saved");
+});
+$("zeroBtn").addEventListener("click", async () => {
+  if (!confirm("Unplug the load (nothing drawing current), then press OK. It takes about 4 s.")) return;
+  if (mode === "demo") { demoCal.inoise = 0.18; calDirty = false; calMsg("Zero offset 0.180 A saved (demo)", "ok"); return loadCal(); }
+  try {
+    const r = await post("/zero");
+    if (!r.ok) return calMsg(r.err, "err");
+    zeroWatch = true; calMsg("Measuring, keep the load unplugged…", "run"); $("zeroBtn").disabled = true;
+  } catch (e) { calMsg("Could not reach GridGuard", "err"); }
+});
+$("calBox").addEventListener("toggle", () => {
+  clearInterval(calTimer);
+  if ($("calBox").open) { loadCal(); calTimer = setInterval(loadCal, 1000); }
 });
 
 tick();

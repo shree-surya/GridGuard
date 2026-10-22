@@ -10,11 +10,16 @@
 
   WEB PAGE   live voltage, current, power, PF and relay state; a 60 s graph; the trip log;
              the limits (over-voltage, under-voltage, over-current, over-power), saved in flash;
-             a relay ON / OFF button. Protection stays active while the relay is on.
+             a relay ON / OFF button; calibration (gain, offset, zero, direction), saved in flash.
+             Protection stays active while the relay is on.
+
+  RELAY ON WHILE THE SUPPLY IS OUT OF RANGE   allowed by hand (web or button): this is an OVERRIDE.
+             Over- and under-voltage are ignored until the voltage comes back into range, then
+             normal protection resumes by itself. Over-current and over-power stay active.
 
   BUTTON (GPIO13 to GND)
     short press      next screen (the screen otherwise stays where it is)
-    hold 2 s         relay on (resets a trip; refused while the supply is out of range),
+    hold 2 s         relay on (resets a trip; out-of-range supply = override, see above),
                      or relay off if it is on (manual OFF, stays off until turned on again)
   A trip always brings the Home screen up.
 
@@ -34,10 +39,10 @@
     Keep BaiJamjuree.h and web_index.h in this folder. Serial Monitor 115200, line ending "Newline".
     The page is web/index.html; after editing it run  python tools/embed_web.py  to rebuild web_index.h.
 
-  CALIBRATION (Serial Monitor; saved in flash)
+  CALIBRATION (web page "Calibration", or the Serial Monitor; saved in flash)
     V 231.5     the multimeter reads 231.5 V            I 4.20    the clamp meter reads 4.20 A (kettle on)
-    Z           idle current noise (nothing plugged in)  F         flip the current direction
-    D           default calibration                      ?         print the calibration
+    O -2.5      voltage offset in volts                  Z         zero offset (idle current, nothing plugged in)
+    F           flip the current direction               D         default calibration      ?   print it
 */
 
 #include <WiFi.h>
@@ -51,7 +56,7 @@
 #include "BaiJamjuree.h"     // Bai Jamjuree in three sizes (BaiS, BaiM, BaiL)
 #include "web_index.h"       // the web page, gzip, made by tools/embed_web.py
 
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.3.0"
 
 // ---------------- types (kept above every function: the IDE adds its function declarations just
 // before the first function, and they must already see these) ----------------
@@ -60,6 +65,7 @@ enum Reason { R_NONE, R_OV, R_UV, R_OC, R_OP };
 enum Page { HOME, GRAPH, TRIPS, LIMITS, CONNECT, PAGES };
 struct Trip { Reason r; float val; uint32_t at; };
 struct Limits { float ovv, uvv, ocv, opp; };
+struct Cal { float vgain, voff, itrim, inoise; int isign; };
 // declared here with their default arguments, so the IDE does not generate its own declarations
 void text(const char *s, int x, int y, uint16_t col, const GFXfont *f = nullptr);
 int  textW(const char *s, const GFXfont *f = nullptr);
@@ -87,9 +93,11 @@ float HYST = 0.02;            // voltage counts as normal again inside OVV x 0.9
 const uint32_t TRIPPED_SHOW_MS = 3000;
 
 // ---------------- calibration (defaults; the live values are in flash) ----------------
-const float V_GAIN_DEF = 0.946f, I_TRIM_DEF = 1.00f, I_NOISE_DEF = 0.195f;
+const float V_GAIN_DEF = 0.946f, V_OFF_DEF = 0, I_TRIM_DEF = 1.00f, I_NOISE_DEF = 0.195f;
 const int   I_SIGN_DEF = -1;
+const Cal   CAL_DEF = { V_GAIN_DEF, V_OFF_DEF, I_TRIM_DEF, I_NOISE_DEF, I_SIGN_DEF };
 float V_GAIN = V_GAIN_DEF;     // mains volts per mV at the pin
+float V_OFF = V_OFF_DEF;       // volts added to the reading (after the gain)
 float I_TRIM = I_TRIM_DEF;     // clamp meter A / shown A
 float I_NOISE = I_NOISE_DEF;   // idle current noise, A rms (removed in quadrature)
 int   I_SIGN = I_SIGN_DEF;     // current direction
@@ -150,6 +158,17 @@ uint32_t toastUntil = 0;
 volatile bool limPending = false;
 Limits        limNext;
 volatile int  relayCmd = -1;              // -1 none, 0 off, 1 on
+volatile bool calPending = false;
+Cal           calNext;
+volatile bool zeroReq = false;
+
+bool     vOverride = false;               // relay turned on by hand while the voltage was out of range
+
+// zero offset measurement (idle current noise), runs over 20 windows in loop()
+int      zeroState = 0;                   // 0 never, 1 running, 2 done, 3 refused
+char     zeroMsg[64] = "";
+int      zeroOk = 0, zeroTries = 0;
+double   zeroSum = 0, zeroSumPF = 0;
 
 // button (polled, also from inside the 200 ms sampling loop so presses are never missed)
 bool     btnRaw = false, btnStable = false, btnLongFired = false;
@@ -167,6 +186,7 @@ void setRelay(bool on) {
   if (on != relayOn) relaySwitches++;
   relayOn = on;
   if (on) relayOnAt = millis();
+  else vOverride = false;
   digitalWrite(PIN_RELAY, on ? HIGH : LOW);
 }
 
@@ -240,6 +260,7 @@ bool measure() {
   float Iraw = sqrt(i2 / N);
   float Praw = I_SIGN * (float)(pSum / N);
   if (Vrms < V_FLOOR) Vrms = 0;
+  else if (V_OFF != 0) { float k = max(0.0f, Vrms + V_OFF) / Vrms; Vrms *= k; Praw *= k; }
   rawI = Iraw;
   rawPF = (Vrms * Iraw > 1.0f) ? fabs(Praw) / (Vrms * Iraw) : 0;
 
@@ -265,10 +286,15 @@ void recordTrip(Reason r, float val, uint32_t now) {
 bool voltageInBand() { return V <= LIM.ovv * (1 - HYST) && V >= LIM.uvv * (1 + HYST); }
 
 void updateState(uint32_t now) {
+  if (vOverride && voltageInBand()) {
+    vOverride = false;
+    Serial.println("[relay] supply back in range, voltage protection active again");
+  }
   Reason f = R_NONE;
   float fv = 0;
-  if (V > LIM.ovv) { f = R_OV; fv = V; }
-  else if (V < LIM.uvv) { f = R_UV; fv = V; }
+  bool vCheck = !vOverride;                        // an override ignores the voltage limits
+  if (vCheck && V > LIM.ovv) { f = R_OV; fv = V; }
+  else if (vCheck && V < LIM.uvv) { f = R_UV; fv = V; }
   else if (relayOn && I > LIM.ocv) { f = R_OC; fv = I; }
   else if (relayOn && fabs(P) > LIM.opp) { f = R_OP; fv = fabs(P); }
 
@@ -304,15 +330,17 @@ void updateState(uint32_t now) {
   }
 }
 
-// Turns the relay on by hand (button hold or web page). Returns nullptr, or why it was refused.
-const char *manualOn() {
-  if (relayOn) return nullptr;
-  if (!voltageInBand()) return "Supply out of range";
+// Turns the relay on by hand (button hold or web page). With the supply out of range this is an
+// override: the voltage limits are ignored until the voltage is back in range.
+void manualOn(bool fromWeb) {
+  if (relayOn) return;
+  bool out = !voltageInBand();
   setRelay(true);
   st = ARMED;
-  beep(1, 60, 0);
-  Serial.println("[relay] on by hand");
-  return nullptr;
+  vOverride = out;
+  beep(out ? 2 : 1, 60, 60);
+  showToast(out ? "ON: voltage override" : (fromWeb ? "Relay on (web)" : "Relay on"));
+  Serial.printf("[relay] on by hand%s\n", out ? ", supply out of range: OVERRIDE (voltage limits paused)" : "");
 }
 void manualOff() {
   setRelay(false);
@@ -330,11 +358,7 @@ void handleButton() {
   if (evLong) {
     evLong = false;
     if (relayOn) { manualOff(); showToast("Relay off (manual)"); }
-    else {
-      const char *e = manualOn();
-      if (e) { beep(2, 60, 60); showToast(e); }
-      else showToast("Relay on");
-    }
+    else manualOn(false);
   }
 }
 
@@ -350,9 +374,17 @@ void handleWeb() {
   int cmd = relayCmd;
   if (cmd >= 0) {
     relayCmd = -1;
-    if (cmd == 1) { const char *e = manualOn(); showToast(e ? e : "Relay on (web)"); }
+    if (cmd == 1) manualOn(true);
     else { manualOff(); showToast("Relay off (web)"); }
   }
+  if (calPending) {
+    calPending = false;
+    applyCal(calNext);
+    saveCal();
+    printCal();
+    showToast("Calibration saved");
+  }
+  if (zeroReq) { zeroReq = false; zeroStart(); }
 }
 
 // Checks limits typed on the page. Returns nullptr if they are fine, otherwise the message to show.
@@ -366,47 +398,95 @@ const char *checkLimits(const Limits &l) {
   return nullptr;
 }
 
-// ---------------- calibration over Serial ----------------
+// ---------------- calibration (web page and Serial) ----------------
+Cal calNow() {
+  return { V_GAIN, V_OFF, I_TRIM, I_NOISE, I_SIGN };
+}
+void applyCal(const Cal &c) {
+  V_GAIN = c.vgain; V_OFF = c.voff; I_TRIM = c.itrim; I_NOISE = c.inoise; I_SIGN = c.isign;
+}
 void saveCal() {
-  prefs.putFloat("vgain", V_GAIN); prefs.putFloat("itrim", I_TRIM);
+  prefs.putFloat("vgain", V_GAIN); prefs.putFloat("voff", V_OFF); prefs.putFloat("itrim", I_TRIM);
   prefs.putFloat("inoise", I_NOISE); prefs.putInt("isign", I_SIGN);
 }
 void printCal() {
-  Serial.printf("[cal] V_GAIN %.4f  I_TRIM %.4f  I_NOISE %.3f A  I_SIGN %d\n", V_GAIN, I_TRIM, I_NOISE, I_SIGN);
+  Serial.printf("[cal] V_GAIN %.4f  V_OFF %+.1f V  I_TRIM %.4f  I_ZERO %.3f A  I_SIGN %d\n", V_GAIN, V_OFF, I_TRIM, I_NOISE, I_SIGN);
 }
-void zeroNoise() {
-  Serial.println("[zero] measuring idle noise, keep the load unplugged...");
-  double sum = 0, sumPF = 0;
-  int ok = 0;
-  for (int w = 0; w < 40 && ok < 20; w++) if (measure()) { sum += rawI; sumPF += rawPF; ok++; }
-  if (ok < 15) { Serial.println("[zero] too few clean windows, try again"); return; }
-  float mi = sum / ok, mpf = sumPF / ok;
-  if (mi > 0.30f || mpf > 0.35f) { Serial.printf("[zero] a load seems connected (%.3f A), nothing changed\n", mi); return; }
-  I_NOISE = mi; saveCal();
-  Serial.printf("[zero] idle noise %.3f A saved\n", mi);
+// Returns nullptr if the values are usable, otherwise the message to show.
+const char *checkCal(const Cal &c) {
+  if (!(c.vgain >= 0.5f && c.vgain <= 1.5f)) return "Voltage gain must be 0.5 to 1.5";
+  if (!(c.voff >= -30 && c.voff <= 30)) return "Voltage offset must be -30 to 30 V";
+  if (!(c.itrim >= 0.5f && c.itrim <= 2.0f)) return "Current trim must be 0.5 to 2.0";
+  if (!(c.inoise >= 0 && c.inoise <= 1.0f)) return "Zero offset must be 0 to 1.0 A";
+  if (c.isign != 1 && c.isign != -1) return "Direction must be 1 or -1";
+  return nullptr;
+}
+// Gain so the shown voltage matches the multimeter (the offset stays as it is).
+const char *calFromVolts(Cal &c, float meter) {
+  if (!(V > 100)) return "Needs mains connected (reading above 100 V)";
+  if (!(meter >= 150 && meter <= 300)) return "Multimeter reading must be 150 to 300 V";
+  if (V - c.voff < 1) return "Reading too low for this offset";
+  c.vgain *= (meter - c.voff) / (V - c.voff);
+  return nullptr;
+}
+// Trim so the shown current matches the clamp meter; the zero offset was in amps, so it scales too.
+const char *calFromAmps(Cal &c, float meter) {
+  if (!(I >= 0.5f)) return "Needs a load drawing at least 0.5 A (kettle or heater)";
+  if (!(meter >= 0.1f && meter <= 10)) return "Clamp meter reading must be 0.1 to 10 A";
+  float k = meter / I;
+  c.itrim *= k; c.inoise *= k;
+  return nullptr;
+}
+// Zero offset: the current the sensor shows with nothing flowing, measured over 20 clean windows.
+void zeroStart() {
+  zeroState = 1; zeroOk = 0; zeroTries = 0; zeroSum = 0; zeroSumPF = 0;
+  strcpy(zeroMsg, "Measuring, keep the load unplugged");
+  Serial.println("[zero] measuring the zero offset, keep the load unplugged...");
+}
+void zeroTick(bool good) {
+  if (zeroState != 1 || zeroReq) return;       // zeroReq: a new run is about to start, its counters are not reset yet
+  zeroTries++;
+  if (good) { zeroSum += rawI; zeroSumPF += rawPF; zeroOk++; }
+  if (zeroOk < 20 && zeroTries < 40) return;
+  if (zeroOk < 15) { zeroState = 3; strcpy(zeroMsg, "Too few clean readings, try again"); }
+  else {
+    float mi = zeroSum / zeroOk, mpf = zeroSumPF / zeroOk;
+    if (mi > 0.30f || mpf > 0.35f) {
+      zeroState = 3;
+      snprintf(zeroMsg, sizeof(zeroMsg), "A load seems connected (%.2f A), nothing changed", mi);
+    } else {
+      I_NOISE = mi; saveCal();
+      zeroState = 2;
+      snprintf(zeroMsg, sizeof(zeroMsg), "Zero offset %.3f A saved", mi);
+      showToast("Zero offset saved");
+    }
+  }
+  Serial.printf("[zero] %s\n", zeroMsg);
 }
 void serialCommands() {
   static char line[24];
   static int n = 0;
   while (Serial.available()) {
-    char c = Serial.read();
-    if (c != '\n' && c != '\r') { if (n < (int)sizeof(line) - 1) line[n++] = c; continue; }
+    char ch = Serial.read();
+    if (ch != '\n' && ch != '\r') { if (n < (int)sizeof(line) - 1) line[n++] = ch; continue; }
     line[n] = 0;
     if (!n) continue;
     n = 0;
     char cmd = toupper(line[0]);
     float x = atof(line + 1);
-    if (cmd == 'V') {
-      if (V > 100 && x > 150 && x < 300) { V_GAIN *= x / V; saveCal(); printCal(); }
-      else Serial.println("[cal] need mains connected and a reading like: V 231.5");
-    } else if (cmd == 'I') {
-      if (I > 0.5f && x > 0.1f && x < 10) { float k = x / I; I_TRIM *= k; I_NOISE *= k; saveCal(); printCal(); }
-      else Serial.println("[cal] need a load of at least 0.5 A and a reading like: I 4.20");
-    } else if (cmd == 'Z') zeroNoise();
-    else if (cmd == 'F') { I_SIGN = -I_SIGN; saveCal(); printCal(); }
-    else if (cmd == 'D') { V_GAIN = V_GAIN_DEF; I_TRIM = I_TRIM_DEF; I_NOISE = I_NOISE_DEF; I_SIGN = I_SIGN_DEF; saveCal(); printCal(); }
-    else if (cmd == '?') printCal();
-    else Serial.println("[cal] commands: V <volts>, I <amps>, Z, F, D, ?");
+    Cal c = calNow();
+    const char *e = nullptr;
+    if (cmd == 'V') e = calFromVolts(c, x);
+    else if (cmd == 'I') e = calFromAmps(c, x);
+    else if (cmd == 'O') c.voff = x;
+    else if (cmd == 'F') c.isign = -c.isign;
+    else if (cmd == 'D') c = CAL_DEF;
+    else if (cmd == 'Z') { zeroStart(); continue; }
+    else if (cmd == '?') { printCal(); continue; }
+    else { Serial.println("[cal] commands: V <volts>, I <amps>, O <volts>, Z, F, D, ?"); continue; }
+    if (!e) e = checkCal(c);
+    if (e) { Serial.printf("[cal] %s\n", e); continue; }
+    applyCal(c); saveCal(); printCal();
   }
 }
 
@@ -465,11 +545,11 @@ void setupWeb() {
     snprintf(b, sizeof(b),
              "{\"v\":%.1f,\"i\":%.3f,\"p\":%.1f,\"pf\":%.3f,\"st\":\"%s\",\"relay\":%d,\"left\":%d,\"why\":\"%s\","
              "\"ovv\":%.0f,\"uvv\":%.0f,\"ocv\":%.2f,\"opp\":%.0f,\"td\":%.0f,\"rd\":%.0f,"
-             "\"trips\":%d,\"up\":%lu,\"fw\":\"%s\"}",
+             "\"trips\":%d,\"up\":%lu,\"fw\":\"%s\",\"ovr\":%d}",
              V, I, fabs(P), PF, STATE_NAME[st], relayOn ? 1 : 0, countdownLeft(now),
              (st == TRIPPED || st == WAITING || st == TRIPPING) ? REASON_LONG[st == TRIPPING ? pending : waitReason] : "",
              LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp, TRIP_DELAY_S, RESTART_S,
-             tripCount, (unsigned long)(now / 1000), FW_VERSION);
+             tripCount, (unsigned long)(now / 1000), FW_VERSION, vOverride ? 1 : 0);
     sendJson(req, b);
   });
 
@@ -521,8 +601,52 @@ void setupWeb() {
   server.on("/relay", HTTP_POST, [](AsyncWebServerRequest *req) {
     int on = (int)param(req, "on", -1);
     if (on != 0 && on != 1) { sendErr(req, "on must be 0 or 1"); return; }
-    if (on == 1 && !relayOn && !voltageInBand()) { sendErr(req, "Supply out of range, relay stays off"); return; }
     relayCmd = on;          // applied in loop()
+    sendJson(req, "{\"ok\":1}");
+  });
+
+  server.on("/cal", HTTP_GET, [](AsyncWebServerRequest *req) {
+    char b[400];
+    snprintf(b, sizeof(b),
+             "{\"vgain\":%.4f,\"voff\":%.1f,\"itrim\":%.4f,\"inoise\":%.3f,\"isign\":%d,\"v\":%.1f,\"i\":%.3f,\"iraw\":%.3f,"
+             "\"zero\":%d,\"zmsg\":\"%s\",\"def\":{\"vgain\":%.4f,\"voff\":%.1f,\"itrim\":%.4f,\"inoise\":%.3f,\"isign\":%d}}",
+             V_GAIN, V_OFF, I_TRIM, I_NOISE, I_SIGN, V, I, rawI, zeroState, zeroMsg,
+             CAL_DEF.vgain, CAL_DEF.voff, CAL_DEF.itrim, CAL_DEF.inoise, CAL_DEF.isign);
+    sendJson(req, b);
+  });
+
+  // one change per call: vref= (multimeter V), iref= (clamp A), vgain=, voff=, itrim=, inoise=, isign=, defaults=1
+  server.on("/cal", HTTP_POST, [](AsyncWebServerRequest *req) {
+    Cal c = calNow();
+    const char *e = nullptr;
+    if (req->hasParam("defaults")) c = CAL_DEF;
+    else if (req->hasParam("vref")) e = calFromVolts(c, param(req, "vref", 0));
+    else if (req->hasParam("iref")) e = calFromAmps(c, param(req, "iref", 0));
+    else {
+      float oldTrim = c.itrim;
+      c.vgain = param(req, "vgain", c.vgain);
+      c.voff = param(req, "voff", c.voff);
+      c.itrim = param(req, "itrim", c.itrim);
+      c.inoise = param(req, "inoise", c.inoise);
+      c.isign = (int)param(req, "isign", (float)c.isign);
+      // the zero offset is in amps: a new trim rescales it, unless it was typed in too
+      if (!req->hasParam("inoise") && c.itrim > 0 && oldTrim > 0) c.inoise *= c.itrim / oldTrim;
+    }
+    if (!e) e = checkCal(c);
+    if (e) { sendErr(req, e); return; }
+    calNext = c;
+    calPending = true;      // applied and saved in loop()
+    char b[200];
+    snprintf(b, sizeof(b), "{\"ok\":1,\"vgain\":%.4f,\"voff\":%.1f,\"itrim\":%.4f,\"inoise\":%.3f,\"isign\":%d}",
+             c.vgain, c.voff, c.itrim, c.inoise, c.isign);
+    sendJson(req, b);
+  });
+
+  server.on("/zero", HTTP_POST, [](AsyncWebServerRequest *req) {
+    if (zeroState == 1) { sendErr(req, "Already measuring"); return; }
+    zeroState = 1;
+    strcpy(zeroMsg, "Measuring, keep the load unplugged");
+    zeroReq = true;         // runs in loop() over about 4 s
     sendJson(req, "{\"ok\":1}");
   });
 
@@ -580,7 +704,10 @@ void statusBar(uint32_t now) {
   uint16_t bg = OK_GREEN;
   char s[24] = "ARMED";
   int left = countdownLeft(now);
-  if (st == TRIPPING) {
+  if (st == ARMED && vOverride) {
+    bg = WARN;
+    strcpy(s, "OVERRIDE");
+  } else if (st == TRIPPING) {
     bg = WARN;
     snprintf(s, sizeof(s), "TRIP IN %.1fs", max(0.0f, TRIP_DELAY_S - (now - stAt) / 1000.0f));
   } else if (st == TRIPPED) {
@@ -772,6 +899,7 @@ void setup() {
 
   prefs.begin("gridguard", false);
   V_GAIN = prefs.getFloat("vgain", V_GAIN_DEF);
+  V_OFF = prefs.getFloat("voff", V_OFF_DEF);
   I_TRIM = prefs.getFloat("itrim", I_TRIM_DEF);
   I_NOISE = prefs.getFloat("inoise", I_NOISE_DEF);
   I_SIGN = prefs.getInt("isign", I_SIGN_DEF) < 0 ? -1 : 1;
@@ -797,12 +925,13 @@ void setup() {
   Serial.printf("Limits: OVV %.0f V, UVV %.0f V, OCV %.2f A, OPP %.0f W, trip delay %.0f s, restart %.0f s\n",
                 LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp, TRIP_DELAY_S, RESTART_S);
   printCal();
-  Serial.println("Calibration commands: V <volts>, I <amps>, Z, F, D, ?");
+  Serial.println("Calibration commands: V <volts>, I <amps>, O <volts>, Z, F, D, ?");
 }
 
 void loop() {
   serialCommands();
-  measure();                       // 200 ms; the last good values stay if a window is skipped
+  bool good = measure();           // 200 ms; the last good values stay if a window is skipped
+  zeroTick(good);
   uint32_t now = millis();
   buttonTick(now);
   buzzerTick(now);
