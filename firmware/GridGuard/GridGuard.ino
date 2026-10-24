@@ -29,7 +29,7 @@
     TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 23, BLK 3V3   (pins set just below)
     ZMPT101B  OUT -> 10k -> GPIO34 node (20k + 100nF to GND)       VCC 5V
     ACS712    OUT -> 10k -> GPIO35 node (20k + 100nF to GND)       VCC 5V, IP+/IP- in the live after the relay
-    Relay     IN GPIO26 (+10k to GND), H trigger, COM/NO in the live, VCC 5V
+    Relay     IN GPIO26 direct (active-low module, see RELAY_ACTIVE_LOW), COM/NO in the live, VCC 5V
     Button    GPIO13 to GND        Buzzer GPIO25 via NPN        LEDs GPIO32 green, GPIO33 red (optional)
 
   ARDUINO IDE
@@ -77,6 +77,11 @@ const int TFT_CS = 5, TFT_RST = 4, TFT_DC = 27;
 const int TFT_SDA = 19, TFT_SCK = 23;   // SPI data (MOSI) and clock: any free GPIOs work, set them to where your wires go
 const int PIN_V = 34, PIN_I = 35;
 const int PIN_BTN = 13, PIN_BUZ = 25, PIN_RELAY = 26, PIN_LED_G = 32, PIN_LED_R = 33;
+// Relay module type. Most 5 V modules without an H/L jumper are active-low: IN at 0 V = relay ON,
+// IN left unconnected = OFF. For those the pin is pulled to 0 V for ON and let go (input, nothing
+// driven) for OFF, so the relay is also off while the ESP32 boots. No resistor on GPIO26 then.
+// Set false only for a high-trigger module (jumper on H): 3.3 V = ON, with 10k from GPIO26 to GND.
+const bool RELAY_ACTIVE_LOW = true;
 
 // ---------------- WiFi ----------------
 const char *WIFI_SSID = "GridGuard";
@@ -182,12 +187,22 @@ bool     buzState = false;
 uint32_t buzAt = 0;
 
 // ---------------- small helpers ----------------
+void relayPin(bool on) {
+  if (RELAY_ACTIVE_LOW) {
+    if (on) { pinMode(PIN_RELAY, OUTPUT); digitalWrite(PIN_RELAY, LOW); }   // 0 V: current flows, relay on
+    else pinMode(PIN_RELAY, INPUT);                                         // let go: no current, relay off
+  } else {
+    pinMode(PIN_RELAY, OUTPUT);
+    digitalWrite(PIN_RELAY, on ? HIGH : LOW);
+  }
+}
+
 void setRelay(bool on) {
   if (on != relayOn) relaySwitches++;
   relayOn = on;
   if (on) relayOnAt = millis();
   else vOverride = false;
-  digitalWrite(PIN_RELAY, on ? HIGH : LOW);
+  relayPin(on);
 }
 
 void beep(int count, uint16_t onMs, uint16_t offMs) {
@@ -889,7 +904,7 @@ uint32_t lastHist = 0, lastLog = 0;
 
 void setup() {
   // relay open before anything else
-  pinMode(PIN_RELAY, OUTPUT); digitalWrite(PIN_RELAY, LOW);
+  relayPin(false);
   pinMode(PIN_BUZ, OUTPUT);   digitalWrite(PIN_BUZ, LOW);
   pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_R, OUTPUT);
   pinMode(PIN_BTN, INPUT_PULLUP);

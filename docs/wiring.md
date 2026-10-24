@@ -18,7 +18,7 @@ ESP32 38-pin DevKit (board "ESP32 Dev Module"). All grounds are one common GND.
 | GPIO27 | TFT DC | |
 | GPIO13 | push button (other leg to GND) | internal pull-up, no resistor |
 | GPIO25 | buzzer driver (NPN base, through 1k) | |
-| GPIO26 | relay module IN (+ 10k to GND) | |
+| GPIO26 | relay module IN | direct wire for an active-low module (the usual kind); 10k to GND only for a high-trigger module |
 | GPIO32 | green ARMED LED (through 330R) | optional |
 | GPIO33 | red TRIP LED (through 330R) | optional |
 
@@ -48,8 +48,7 @@ Free for later: GPIO14, 16, 17, 18, 21, 22. Avoid GPIO0, 2, 12, 15 (boot pins) a
                          │                           │
   GND ── button ─────────┤ GPIO13                    │
                          │                           │
-  Relay IN ─────────●────┤ GPIO26                    │
-                    └─[10k]── GND                    │
+  Relay IN ──────────────┤ GPIO26  (no resistor)     │
                          │                           │
            ┌─[1k]────────┤ GPIO25                    │
            │             │                           │
@@ -80,7 +79,11 @@ The 10k/20k dividers scale the 5 V sensor outputs to 3.3 V. The 10k goes from th
 
 **Buzzer (5 V active):** + → 5V rail, − → NPN collector. NPN emitter → GND, base → 1k → GPIO25. BC547 legs, flat face towards you: C B E. 2N2222 (TO-92) flat face towards you: E B C.
 
-**Relay module (5 V, 10 A, single channel):** DC+ / VCC → 5V rail, DC− / GND → GND, IN → GPIO26, and 10k from GPIO26 to GND. Set the trigger jumper to **H (high)**. That way the relay stays open while the ESP32 boots, crashes or is unpowered. If the module has no H/L jumper it is usually active-low: do not use it as is (it closes when the pin is low or floating); use a high-trigger module or drive a bare relay with an NPN plus a 1N4007 across the coil.
+**Relay module (5 V, 10 A, single channel):** DC+ / VCC → 5V rail, DC− / GND → GND, IN → GPIO26 with a plain wire, no resistor.
+
+Most of these modules are **active-low** (no H/L jumper): IN at 0 V turns the relay ON, IN left unconnected keeps it OFF. Check yours with only 5 V and GND connected: IN touched to GND clicks it on, IN touched to nothing leaves it off. The firmware (`RELAY_ACTIVE_LOW = true`) pulls GPIO26 to 0 V for ON and lets go of the pin (input) for OFF, so the relay also stays off while the ESP32 boots, resets or is being flashed. Do **not** put a 10k from GPIO26 to GND on such a module: it would pull IN low and turn the relay on.
+
+A module with an H/L jumper set to **H** is high-trigger: set `RELAY_ACTIVE_LOW = false` in the sketch and add 10k from GPIO26 to GND.
 
 **LEDs (optional):** GPIO → 330R → LED long leg; short leg (flat side) → GND.
 
