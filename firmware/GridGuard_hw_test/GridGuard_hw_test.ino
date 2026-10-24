@@ -18,7 +18,7 @@
     ACS712    OUT -> 10k -> GPIO35 node (20k + 100nF to GND)      VCC 5V, GND
     Button    GPIO13 to GND (internal pull-up)
     Buzzer    GPIO25 -> 1k -> NPN base; NPN collector to buzzer -, buzzer + to 5V
-    Relay     IN GPIO26 direct (active-low module, see RELAY_ACTIVE_LOW), VCC 5V, GND
+    Relay     IN -> red LED (long leg) -> GPIO26 (active-low module, see RELAY_ACTIVE_LOW), VCC 5V, GND
     LEDs      GPIO32 / GPIO33 -> 330R -> LED -> GND (optional)
 
   TEST ORDER (safe first)
@@ -41,7 +41,8 @@ const int PIN_V = 34, PIN_I = 35;
 const int PIN_BTN = 13, PIN_BUZ = 25, PIN_RELAY = 26, PIN_LED_G = 32, PIN_LED_R = 33;
 // Relay module type. Most 5 V modules without an H/L jumper are active-low: IN at 0 V = relay ON,
 // IN left unconnected = OFF. For those the pin is pulled to 0 V for ON and let go (input, nothing
-// driven) for OFF, so the relay is also off while the ESP32 boots. No resistor on GPIO26 then.
+// driven) for OFF, so the relay is also off while the ESP32 boots. Put a red LED in the IN wire
+// (long leg to IN, short leg to GPIO26), else a released pin (~3.6 V) still keeps it on. No resistor.
 // Set false only for a high-trigger module (jumper on H): 3.3 V = ON, with 10k from GPIO26 to GND.
 const bool RELAY_ACTIVE_LOW = true;
 

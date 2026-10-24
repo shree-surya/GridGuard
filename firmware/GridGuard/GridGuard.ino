@@ -29,7 +29,7 @@
     TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 23, BLK 3V3   (pins set just below)
     ZMPT101B  OUT -> 10k -> GPIO34 node (20k + 100nF to GND)       VCC 5V
     ACS712    OUT -> 10k -> GPIO35 node (20k + 100nF to GND)       VCC 5V, IP+/IP- in the live after the relay
-    Relay     IN GPIO26 direct (active-low module, see RELAY_ACTIVE_LOW), COM/NO in the live, VCC 5V
+    Relay     IN -> red LED (long leg) -> GPIO26 (active-low module, see RELAY_ACTIVE_LOW), COM/NO in the live, VCC 5V
     Button    GPIO13 to GND        Buzzer GPIO25 via NPN        LEDs GPIO32 green, GPIO33 red (optional)
 
   ARDUINO IDE
@@ -79,7 +79,8 @@ const int PIN_V = 34, PIN_I = 35;
 const int PIN_BTN = 13, PIN_BUZ = 25, PIN_RELAY = 26, PIN_LED_G = 32, PIN_LED_R = 33;
 // Relay module type. Most 5 V modules without an H/L jumper are active-low: IN at 0 V = relay ON,
 // IN left unconnected = OFF. For those the pin is pulled to 0 V for ON and let go (input, nothing
-// driven) for OFF, so the relay is also off while the ESP32 boots. No resistor on GPIO26 then.
+// driven) for OFF, so the relay is also off while the ESP32 boots. Put a red LED in the IN wire
+// (long leg to IN, short leg to GPIO26), else a released pin (~3.6 V) still keeps it on. No resistor.
 // Set false only for a high-trigger module (jumper on H): 3.3 V = ON, with 10k from GPIO26 to GND.
 const bool RELAY_ACTIVE_LOW = true;
 
