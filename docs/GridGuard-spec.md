@@ -30,7 +30,7 @@ Armed -> Tripping (delay counting) -> Tripped (relay open, buzzer, red LED, reas
 | ZMPT101B OUT | GPIO34 | 10k series, 20k + 100nF to GND at the pin (same as PowerScope) |
 | ACS712-20A OUT | GPIO35 | same divider |
 | 1.77" ST7735S TFT, 128 x 160, SPI | SCK 23, SDA(MOSI) 19, CS 5, RST 4, DC 27 | VCC 3V3, BLK 3V3. Replaces the 1.3" OLED |
-| Relay module 5 V, 10 A | GPIO26 | COM/NO on live. Use a high-level-trigger module (H/L jumper on H) and 10k GPIO26 to GND, so boot, crash or no power = relay open |
+| Relay module 5 V, 10 A | GPIO26 | COM/NO on live. Active-low module (usual): IN wired straight to GPIO26, no resistor; firmware pulls it low for ON and releases it for OFF (RELAY_ACTIVE_LOW = true), so boot or no power = relay open. High-trigger module (jumper on H): RELAY_ACTIVE_LOW = false and 10k GPIO26 to GND |
 | Buzzer, 5 V active | GPIO25 | through an NPN (BC547/2N2222), 1k base resistor |
 | Push button | GPIO13 | to GND, internal pull-up, debounced in firmware. Replaces the TTP223 touch pad. Short: next screen, 2 s hold: reset a trip |
 | Red TRIP LED / green ARMED LED | GPIO33 / GPIO32 | 330 ohm each |
