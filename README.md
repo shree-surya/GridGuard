@@ -4,10 +4,10 @@ An ESP32 protector for single-phase 230 V loads up to 6 A, built into a modular 
 
 | | |
 |---|---|
-| Protects against | over-voltage (OVV), under-voltage (UVV), over-current (OCV), over-power (OPP) |
+| Protects against | voltage, current and power outside their windows: LSL (lower) and USL (upper) for each, any values |
 | Display | 1.77" colour TFT (ST7735S, 128 x 160, SPI) |
 | Web | own WiFi hotspot "GridGuard" (password `gridguard`), http://192.168.4.1: live readings, 60 s graph, limits, relay ON/OFF, calibration, trip log |
-| Status | firmware 0.3.0: protection, display, button, WiFi and web page working in the PC simulation and a headless browser, not yet on hardware |
+| Status | firmware 0.4.0: protection, display, button, WiFi and web page working in the PC simulation and a headless browser, not yet on hardware |
 
 ![Display preview](docs/display-preview.png)
 
@@ -29,8 +29,11 @@ tools/embed_web.py                 gzips web/index.html into web_index.h; run it
 
 1. Arduino IDE, board **ESP32 Dev Module**, **Tools > Partition Scheme > Huge APP (3MB No OTA/1MB SPIFFS)**. Library Manager: **Adafruit GFX Library** and **Adafruit ST7735 and ST7789 Library**. From GitHub (Code > Download ZIP, then Sketch > Include Library > Add .ZIP Library): **ESP32Async/ESPAsyncWebServer** and **ESP32Async/AsyncTCP**.
 2. Open `firmware/GridGuard/GridGuard.ino` (keep `BaiJamjuree.h` and `web_index.h` beside it) and upload.
-3. Phone: join WiFi **GridGuard**, password **gridguard**, open **http://192.168.4.1**. Set OVV, UVV, OCV and OPP there and press Save limits (kept in flash). The ON/OFF switch turns the relay on or off; protection stays active while it is on. Turning it on while the voltage is out of range is an **override**: over- and under-voltage are ignored until the voltage is back in range, over-current and over-power stay active.
-4. Button: short press changes the screen, hold 2 s turns the relay on (also resets a trip; an out-of-range supply gives the override above) or off. The relay closes 10 s after power-up if the voltage is in range. A relay turned off by hand stays off until turned on again.
+3. Phone: join WiFi **GridGuard**, password **gridguard**, open **http://192.168.4.1**. In **Limits**, set LSL and USL for voltage, current and power (any values, LSL below USL, an LSL of 0 never trips) and press Save limits (kept in flash). The relay is on only while every value is inside its window.
+4. After a trip:
+   - **voltage**: automatic. The relay closes again once the voltage has been back inside its window for 10 s (power-up works the same way).
+   - **current or power**: the relay stays off (Reset needed) until you tap **ON** on the page or **hold the button 5 s**. The screen shows RESETTING 5 4 3 2 1; let go early to cancel. Then the relay closes and all limits are checked again.
+   - Button: short press changes the screen; with the relay on, hold 2 s to turn it off. Web ON while the voltage is out of range is an override (voltage limits paused until it is back).
 5. Calibrate on the web page (Calibration, saved in flash): type the multimeter voltage and press Match; run a kettle, type the clamp meter current and press Match; unplug the load and press Measure zero; Flip direction if power reads wrong. Gain, voltage offset, current trim and zero offset can also be typed in. The same works in the Serial Monitor (115200, "Newline"): `V 231.5`, `I 4.20`, `O -2.5` (voltage offset), `Z`, `F`, `D` (defaults), `?`.
 
 ![Firmware screens](docs/firmware-screens.png)

@@ -89,6 +89,13 @@ canvas{width:100%;height:190px;display:block}
 .formmsg{font-size:13px}
 .formmsg.ok{color:var(--ok)}.formmsg.err{color:var(--bad)}
 .note{font-size:12px;color:var(--muted);margin-top:10px}
+.ltab{display:grid;grid-template-columns:72px minmax(0,1fr) minmax(0,1fr);gap:8px 10px;align-items:center}
+.ltab>*{min-width:0}
+.btn{white-space:nowrap}
+.ltab .hd{font-size:12px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.ltab .nm{font-weight:700;color:var(--c);display:flex;flex-direction:column;line-height:1.15}
+.ltab .nm small{font-weight:500;font-size:11px;color:var(--muted)}
+.ltab .inp input{font-size:18px;padding:8px 0}
 
 /* trips */
 .trips{list-style:none}
@@ -146,11 +153,11 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:6px}
   </div>
   <div class="tile" id="tI" style="--c:var(--amp)">
     <div class="lbl">Current</div><div class="val num"><span id="i">—</span><u>A</u></div>
-    <div class="bar"><i id="iBar"></i><s id="iLim"></s></div><div class="sub" id="iSub"></div>
+    <div class="bar"><i id="iBar"></i><s id="iLo"></s><s id="iHi"></s></div><div class="sub" id="iSub"></div>
   </div>
   <div class="tile" id="tP" style="--c:var(--pow)">
     <div class="lbl">Power</div><div class="val num"><span id="p">—</span><u>W</u></div>
-    <div class="bar"><i id="pBar"></i><s id="pLim"></s></div><div class="sub" id="pSub"></div>
+    <div class="bar"><i id="pBar"></i><s id="pLo"></s><s id="pHi"></s></div><div class="sub" id="pSub"></div>
   </div>
   <div class="tile" style="--c:var(--brand)">
     <div class="lbl">Power factor</div><div class="val num"><span id="pf">—</span></div>
@@ -169,35 +176,27 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:6px}
 </section>
 
 <section>
-  <h2>Cut-off limits</h2>
-  <form class="form" id="limForm" autocomplete="off" novalidate>
-    <div class="field" style="--c:var(--volt)">
-      <label for="ovv"><b>OVV</b> over-voltage</label>
-      <div class="inp"><input id="ovv" type="number" inputmode="decimal" step="1" min="200" max="280"><span>V</span></div>
-      <small>200 to 280 V</small>
+  <h2>Limits <small>relay on only inside every window</small></h2>
+  <form id="limForm" autocomplete="off" novalidate>
+    <div class="ltab">
+      <span class="hd">Type</span><span class="hd">LSL (lower)</span><span class="hd">USL (upper)</span>
+      <span class="nm" style="--c:var(--volt)">Voltage<small>volts</small></span>
+      <div class="inp"><input id="vl" type="number" inputmode="decimal" step="any"><span>V</span></div>
+      <div class="inp"><input id="vu" type="number" inputmode="decimal" step="any"><span>V</span></div>
+      <span class="nm" style="--c:var(--amp)">Current<small>amps</small></span>
+      <div class="inp"><input id="il" type="number" inputmode="decimal" step="any"><span>A</span></div>
+      <div class="inp"><input id="iu" type="number" inputmode="decimal" step="any"><span>A</span></div>
+      <span class="nm" style="--c:var(--pow)">Power<small>watts</small></span>
+      <div class="inp"><input id="pl" type="number" inputmode="decimal" step="any"><span>W</span></div>
+      <div class="inp"><input id="pu" type="number" inputmode="decimal" step="any"><span>W</span></div>
     </div>
-    <div class="field" style="--c:var(--volt)">
-      <label for="uvv"><b>UVV</b> under-voltage</label>
-      <div class="inp"><input id="uvv" type="number" inputmode="decimal" step="1" min="150" max="220"><span>V</span></div>
-      <small>150 to 220 V</small>
-    </div>
-    <div class="field" style="--c:var(--amp)">
-      <label for="ocv"><b>OCV</b> over-current</label>
-      <div class="inp"><input id="ocv" type="number" inputmode="decimal" step="0.1" min="0.5" max="7"><span>A</span></div>
-      <small>0.5 to 7.0 A</small>
-    </div>
-    <div class="field" style="--c:var(--pow)">
-      <label for="opp"><b>OPP</b> over-power</label>
-      <div class="inp"><input id="opp" type="number" inputmode="decimal" step="10" min="50" max="1600"><span>W</span></div>
-      <small>50 to 1600 W</small>
-    </div>
-    <div class="actions">
+    <div class="actions" style="margin-top:12px">
       <button class="btn" id="saveBtn" type="submit">Save limits</button>
       <button class="btn ghost" id="undoBtn" type="button">Undo</button>
       <span class="formmsg" id="formMsg"></span>
     </div>
   </form>
-  <div class="note" id="delays">The relay opens when a value stays past its limit for the trip delay, and closes again after the restart delay once the voltage is back in range.</div>
+  <div class="note" id="delays"></div>
 </section>
 
 <section>
@@ -272,7 +271,8 @@ const STATES = {
   TRIPPING: { t: "Tripping",   c: "--warn" },
   TRIPPED:  { t: "Tripped",    c: "--bad" },
   WAITING:  { t: "Waiting",    c: "--wait" },
-  OFF:      { t: "Switched off", c: "--off" }
+  OFF:      { t: "Switched off", c: "--off" },
+  LOCKED:   { t: "Reset needed", c: "--bad" }
 };
 
 let mode = "connecting";   // live | demo | lost
@@ -295,7 +295,7 @@ async function post(path) {
 
 // ---------- demo (only before the device has ever answered) ----------
 const demo = {
-  t: 0, relay: 1, st: "ARMED", left: -1, why: "", lim: { ovv: 250, uvv: 190, ocv: 6, opp: 1300 }, trips: [], stAt: 0,
+  t: 0, relay: 1, st: "ARMED", left: -1, why: "", lim: { vl: 190, vu: 250, il: 0, iu: 6, pl: 0, pu: 1300 }, trips: [], stAt: 0,
   step() {
     this.t++;
     const v = 231 + 3 * Math.sin(this.t / 9) + Math.random();
@@ -304,7 +304,7 @@ const demo = {
     if (this.st === "WAITING" && this.t - this.stAt >= 10) { this.relay = 1; this.st = "ARMED"; }
     this.left = this.st === "WAITING" ? 10 - (this.t - this.stAt) : -1;
     return { v, i, p: v * i * pf, pf, st: this.st, relay: this.relay, left: this.left, why: this.why,
-      ...this.lim, td: 2, rd: 10, trips: this.trips.length, up: this.t, fw: "demo", ovr: this.ovr || 0 };
+      ...this.lim, td: 2, rd: 10, gs: 5, trips: this.trips.length, up: this.t, fw: "demo", ovr: this.ovr || 0 };
   }
 };
 for (let k = 0; k < 4; k++) demo.trips.push({ why: ["Over-voltage", "Over-current", "Under-voltage", "Over-power"][k],
@@ -371,6 +371,7 @@ function render() {
   else if (d.st === "WAITING") why = d.left >= 0 ? (d.why ? "After " + d.why.toLowerCase() + " · " : "Power-up · ") + "relay on in " + d.left + " s"
                                                : "Supply out of range · waiting for it to settle";
   else if (d.st === "OFF") why = "Turned off by hand · protection resumes when you turn it on";
+  else if (d.st === "LOCKED") why = d.why + " · stays off until reset: tap ON, or hold the button 5 s";
   $("why").textContent = why;
 
   const sw = $("relayBtn");
@@ -381,35 +382,35 @@ function render() {
   $("relayHint").textContent = d.relay ? "Tap to turn off" : "Tap to turn on";
 
   // voltage
-  const vLo = d.uvv - 20, vHi = d.ovv + 20;
-  $("v").textContent = fmt(d.v, 1);
-  $("vBar").style.width = pct(d.v, vLo, vHi) + "%";
-  $("vLo").style.left = pct(d.uvv, vLo, vHi) + "%";
-  $("vHi").style.left = pct(d.ovv, vLo, vHi) + "%";
-  $("vSub").textContent = "OK " + d.uvv + " to " + d.ovv + " V";
-  $("tV").classList.toggle("alarm", d.v > d.ovv || d.v < d.uvv);
+  win("v", d.v, d.vl, d.vu, 1, "V", true);
   // current
-  $("i").textContent = fmt(d.i, 2);
-  $("iBar").style.width = pct(d.i, 0, d.ocv * 1.25) + "%";
-  $("iLim").style.left = pct(d.ocv, 0, d.ocv * 1.25) + "%";
-  $("iSub").textContent = "Cut-off above " + fmt(d.ocv, 1) + " A";
-  $("tI").classList.toggle("alarm", d.i > d.ocv);
+  win("i", d.i, d.il, d.iu, 2, "A", d.relay);
   // power
-  $("p").textContent = fmt(d.p, 0);
-  $("pBar").style.width = pct(d.p, 0, d.opp * 1.25) + "%";
-  $("pLim").style.left = pct(d.opp, 0, d.opp * 1.25) + "%";
-  $("pSub").textContent = "Cut-off above " + d.opp + " W";
-  $("tP").classList.toggle("alarm", d.p > d.opp);
+  win("p", d.p, d.pl, d.pu, 0, "W", d.relay);
   // pf
   $("pf").textContent = d.i > 0 ? fmt(d.pf, 2) : "—";
   $("pfBar").style.width = (d.pf * 100) + "%";
   $("upSub").textContent = "Up " + dur(d.up);
 
   if (!formDirty) fillForm(d);
-  $("delays").textContent = "The relay opens when a value stays past its limit for " + d.td + " s, and closes again " + d.rd +
-    " s after the voltage is back in range. Turn it off by hand and it stays off until you turn it on.";
+  $("delays").textContent = "Any values, LSL below USL; an LSL of 0 never trips. The relay opens when a value stays outside its window for " + d.td +
+    " s. Voltage is checked all the time; after a voltage trip the relay closes by itself once the voltage has been back inside for " + d.rd +
+    " s. Current and power are checked while the relay is on (their LSL from " + d.gs + " s after it closes); after a current or power trip it stays off until reset (ON here, or hold the button 5 s).";
   $("foot").textContent = "GridGuard · firmware " + d.fw + " · 192.168.4.1";
   drawChart();
+}
+// one live tile: value, bar with the LSL..USL window marked, and the "OK a to b" line
+const T = { v: "tV", i: "tI", p: "tP" };
+function nice(x) { return x >= 100 || Number.isInteger(x) ? String(Math.round(x * 10) / 10) : String(+x.toFixed(2)); }
+function win(k, x, lo, hi, dec, unit, checkLow) {
+  const span = hi - lo, a = Math.max(0, lo - span * 0.25), b = hi + span * 0.25;
+  $(k).textContent = fmt(x, dec);
+  $(k + "Bar").style.width = pct(x, a, b) + "%";
+  $(k + "Lo").style.left = pct(lo, a, b) + "%";
+  $(k + "Lo").style.display = lo > 0 ? "" : "none";
+  $(k + "Hi").style.left = pct(hi, a, b) + "%";
+  $(k + "Sub").textContent = (lo > 0 ? "OK " + nice(lo) + " to " + nice(hi) : "OK up to " + nice(hi)) + " " + unit;
+  $(T[k]).classList.toggle("alarm", x > hi || (checkLow && lo > 0 && x < lo));
 }
 function dur(s) {
   if (s < 60) return s + " s";
@@ -443,9 +444,9 @@ function drawChart() {
   cx.clearRect(0, 0, w, h);
   const data = H[tab], col = COLORS[tab];
   let lims, lo, hi, unit, dec;
-  if (tab === "v") { lims = [D.ovv, D.uvv]; lo = D.uvv - 25; hi = D.ovv + 25; unit = "V"; dec = 1; }
-  else if (tab === "i") { lims = [D.ocv]; lo = 0; hi = Math.max(D.ocv * 1.3, ...data); unit = "A"; dec = 2; }
-  else { lims = [D.opp]; lo = 0; hi = Math.max(D.opp * 1.3, ...data); unit = "W"; dec = 0; }
+  if (tab === "v") { const s = D.vu - D.vl; lims = [D.vu, D.vl]; lo = Math.max(0, D.vl - s * 0.3); hi = D.vu + s * 0.3; unit = "V"; dec = 1; }
+  else if (tab === "i") { lims = D.il > 0 ? [D.iu, D.il] : [D.iu]; lo = 0; hi = Math.max(D.iu * 1.3, ...data); unit = "A"; dec = 2; }
+  else { lims = D.pl > 0 ? [D.pu, D.pl] : [D.pu]; lo = 0; hi = Math.max(D.pu * 1.3, ...data); unit = "W"; dec = 0; }
   $("chartNow").textContent = data.length ? fmt(data[data.length - 1], dec) + " " + unit : "";
   const L = 38, R = 8, T = 8, B = 20, pw = w - L - R, ph = h - T - B;
   const X = k => L + k / 59 * pw, Y = v => T + ph - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * ph;
@@ -486,8 +487,8 @@ $("relayBtn").addEventListener("click", async () => {
   if (!D || busy) return;
   const on = D.relay ? 0 : 1;
   if (!on && !confirm("Turn the relay OFF? The socket loses power until you turn it on again.")) return;
-  const outOfRange = D.v > D.ovv * 0.98 || D.v < D.uvv * 1.02;
-  if (on && outOfRange && !confirm("The supply is " + fmt(D.v, 0) + " V, outside " + D.uvv + " to " + D.ovv +
+  const outOfRange = D.v > D.vu || D.v < D.vl;
+  if (on && outOfRange && !confirm("The supply is " + fmt(D.v, 0) + " V, outside " + nice(D.vl) + " to " + nice(D.vu) +
       " V.\n\nTurn ON anyway? Voltage protection is paused until the supply is back in range. Current and power protection stay on.")) return;
   $("relayMsg").textContent = "";
   if (mode === "demo") {
@@ -504,18 +505,17 @@ $("relayBtn").addEventListener("click", async () => {
 });
 
 // ---------- limits ----------
-const F = ["ovv", "uvv", "ocv", "opp"];
-function fillForm(d) { for (const k of F) $(k).value = k === "ocv" ? fmt(d[k], 1) : Math.round(d[k]); }
+const F = ["vl", "vu", "il", "iu", "pl", "pu"];
+function fillForm(d) { for (const k of F) $(k).value = nice(d[k]); }
 for (const k of F) $(k).addEventListener("input", () => { formDirty = true; formMsg("", ""); });
 function formMsg(t, c) { const m = $("formMsg"); m.textContent = t; m.className = "formmsg " + c; }
 $("undoBtn").addEventListener("click", () => { formDirty = false; if (D) fillForm(D); formMsg("", ""); });
 function checkForm(l) {
-  if (F.some(k => !isFinite(l[k]))) return "Fill in all four limits";
-  if (l.ovv < 200 || l.ovv > 280) return "OVV must be 200 to 280 V";
-  if (l.uvv < 150 || l.uvv > 220) return "UVV must be 150 to 220 V";
-  if (l.ovv - l.uvv < 20) return "OVV must be at least 20 V above UVV";
-  if (l.ocv < 0.5 || l.ocv > 7) return "OCV must be 0.5 to 7.0 A";
-  if (l.opp < 50 || l.opp > 1600) return "OPP must be 50 to 1600 W";
+  for (const [n, a, b, max, u] of [["Voltage", "vl", "vu", 1000, "V"], ["Current", "il", "iu", 100, "A"], ["Power", "pl", "pu", 100000, "W"]]) {
+    if (!isFinite(l[a]) || !isFinite(l[b])) return n + ": fill in LSL and USL";
+    if (l[a] < 0 || l[b] > max) return n + ": limits must be 0 to " + max + " " + u;
+    if (!(l[a] < l[b])) return n + ": LSL must be below USL";
+  }
   return "";
 }
 $("limForm").addEventListener("submit", async e => {

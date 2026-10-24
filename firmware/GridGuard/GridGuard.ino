@@ -1,29 +1,37 @@
 /*
-  GridGuard: ESP32 over/under-voltage, over-current and over-power protector with a relay cut-off
-  ===============================================================================================
-  Measures the mains voltage (ZMPT101B) and load current (ACS712-20A) every 200 ms, opens the relay
-  when a value stays outside its limit for the trip delay, and closes it again after the restart
-  delay once the supply is back in range. Shows everything on a 1.77" colour TFT and on its own
-  WiFi hotspot:
+  GridGuard: ESP32 voltage, current and power window protector with a relay cut-off
+  =================================================================================
+  Measures the mains voltage (ZMPT101B) and load current (ACS712-20A) every 200 ms. Each of voltage,
+  current and power has a lower and an upper limit (LSL, USL). The relay stays on while every value
+  is inside its limits and opens when one stays outside for the trip delay. Shows everything on a
+  1.77" colour TFT and on its own WiFi hotspot:
 
       WiFi  "GridGuard"   password  "gridguard"      ->  http://192.168.4.1
 
   WEB PAGE   live voltage, current, power, PF and relay state; a 60 s graph; the trip log;
-             the limits (over-voltage, under-voltage, over-current, over-power), saved in flash;
+             the limits table (LSL / USL for voltage, current, power; any values), saved in flash;
              a relay ON / OFF button; calibration (gain, offset, zero, direction), saved in flash.
-             Protection stays active while the relay is on.
 
-  RELAY ON WHILE THE SUPPLY IS OUT OF RANGE   allowed by hand (web or button): this is an OVERRIDE.
-             Over- and under-voltage are ignored until the voltage comes back into range, then
-             normal protection resumes by itself. Over-current and over-power stay active.
+  LIMITS     Voltage is checked all the time. Current and power only while the relay is on (with it
+             open they read 0); their LSL is checked from START_GRACE_S after the relay closes, so a
+             load has time to start. An LSL of 0 never trips.
+
+  AFTER A TRIP
+    voltage          automatic: the relay closes again once the voltage has been back inside its
+                     limits for the restart delay (10 s). Power-up works the same way.
+    current, power   LOCKED: the relay stays off until reset (button hold 5 s, or ON on the web page),
+                     since with the relay open there is no current to show the fault has gone.
 
   BUTTON (GPIO13 to GND)
     short press      next screen (the screen otherwise stays where it is)
-    hold 2 s         relay on (resets a trip; out-of-range supply = override, see above),
-                     or relay off if it is on (manual OFF, stays off until turned on again)
+    hold 5 s         relay off: reset. The screen shows RESETTING 5 4 3 2 1 while you hold; let go
+                     early to cancel. Then the relay closes and every limit is checked again, so a
+                     supply that is still out of range trips it again after the trip delay.
+    hold 2 s         relay on: turn it off (manual OFF, stays off until turned on again)
   A trip always brings the Home screen up.
 
-  POWER-UP   The relay stays open for the restart delay (10 s) and closes only if the voltage is in range.
+  WEB ON WHILE THE VOLTAGE IS OUT OF RANGE   an OVERRIDE: the voltage limits are ignored until the
+             voltage is back inside them, then normal protection resumes. Current and power stay active.
 
   WIRING (docs/wiring.md)
     TFT       VCC 3V3, GND, CS 5, RST 4, DC 27, SDA 19, SCK 23, BLK 3V3   (pins set just below)
@@ -56,15 +64,16 @@
 #include "BaiJamjuree.h"     // Bai Jamjuree in three sizes (BaiS, BaiM, BaiL)
 #include "web_index.h"       // the web page, gzip, made by tools/embed_web.py
 
-#define FW_VERSION "0.3.0"
+#define FW_VERSION "0.4.0"
 
 // ---------------- types (kept above every function: the IDE adds its function declarations just
 // before the first function, and they must already see these) ----------------
-enum State { ARMED, TRIPPING, TRIPPED, WAITING, MANUAL_OFF };
-enum Reason { R_NONE, R_OV, R_UV, R_OC, R_OP };
+enum State { ARMED, TRIPPING, TRIPPED, WAITING, MANUAL_OFF, LOCKED };
+enum Reason { R_NONE, R_OV, R_UV, R_OC, R_UC, R_OP, R_UP };
 enum Page { HOME, GRAPH, TRIPS, LIMITS, CONNECT, PAGES };
 struct Trip { Reason r; float val; uint32_t at; };
-struct Limits { float ovv, uvv, ocv, opp; };
+struct Limits { float vl, vu, il, iu, pl, pu; };   // LSL and USL of voltage, current, power
+struct OldLimits { float ovv, uvv, ocv, opp; };       // flash layout of firmware 0.2 / 0.3
 struct Cal { float vgain, voff, itrim, inoise; int isign; };
 // declared here with their default arguments, so the IDE does not generate its own declarations
 void text(const char *s, int x, int y, uint16_t col, const GFXfont *f = nullptr);
@@ -89,13 +98,14 @@ const char *WIFI_SSID = "GridGuard";
 const char *WIFI_PASS = "gridguard";    // WPA2: at least 8 characters
 
 // ---------------- protection settings (limits set from the web page, saved in flash) ----------------
-const Limits LIM_DEF = { 250, 190, 6.0, 1300 };
-const Limits LIM_MIN = { 200, 150, 0.5, 50 };
-const Limits LIM_MAX = { 280, 220, 7.0, 1600 };   // 7 A / 1600 W: 10 A relay, 6 A socket
+const Limits LIM_DEF = { 190, 250, 0, 6.0, 0, 1300 };
+const float  V_MAXSET = 1000, I_MAXSET = 100, P_MAXSET = 100000;   // only to catch typing errors
 Limits LIM = LIM_DEF;
 float TRIP_DELAY_S = 2;       // a fault must last this long
-float RESTART_S = 10;         // wait after a trip (and at power-up) before closing the relay
-float HYST = 0.02;            // voltage counts as normal again inside OVV x 0.98 and UVV x 1.02
+float RESTART_S = 10;         // wait after a voltage trip (and at power-up) before closing the relay
+float START_GRACE_S = 5;      // current and power LSL are checked this long after the relay closes
+float HYST = 0.02;            // voltage counts as back inside 2 % of USL from the limits (less if the window is narrow)
+const uint32_t SHORT_MAX_MS = 800, OFF_HOLD_MS = 2000, RESET_HOLD_MS = 5000;   // button timings
 const uint32_t TRIPPED_SHOW_MS = 3000;
 
 // ---------------- calibration (defaults; the live values are in flash) ----------------
@@ -132,9 +142,10 @@ const uint16_t VOLT = rgb(0x8FA8FF), AMP = rgb(0xFF8FA3), POW = rgb(0x47E5BC);
 const uint16_t OK_GREEN = rgb(0x3DDC84), WARN = rgb(0xFF9F1C), BAD = rgb(0xFF4D4D), BAD_DIM = rgb(0x8A1F1F), WAIT = rgb(0x4DA3FF), OFFGREY = rgb(0x6B7080);
 const uint16_t SAFE_BAND = rgb(0x1E3A2A);
 
-const char *REASON_LONG[]  = { "Power-up", "Over-voltage", "Under-voltage", "Over-current", "Over-power" };
-const char *REASON_SHORT[] = { "START", "OVER-V", "UNDER-V", "OVER-I", "OVER-P" };
-const char *STATE_NAME[]   = { "ARMED", "TRIPPING", "TRIPPED", "WAITING", "OFF" };
+const char *REASON_LONG[]  = { "Power-up", "Over-voltage", "Under-voltage", "Over-current", "Under-current", "Over-power", "Under-power" };
+const char *REASON_SHORT[] = { "START", "OVER-V", "UNDER-V", "OVER-I", "UNDER-I", "OVER-P", "UNDER-P" };
+const char *REASON_UNIT[]  = { "", "V", "V", "A", "A", "W", "W" };
+const char *STATE_NAME[]   = { "ARMED", "TRIPPING", "TRIPPED", "WAITING", "OFF", "LOCKED" };
 
 // ---------------- live state ----------------
 float    V = 0, I = 0, P = 0, PF = 0;     // last good measurement
@@ -177,9 +188,10 @@ int      zeroOk = 0, zeroTries = 0;
 double   zeroSum = 0, zeroSumPF = 0;
 
 // button (polled, also from inside the 200 ms sampling loop so presses are never missed)
-bool     btnRaw = false, btnStable = false, btnLongFired = false;
+bool     btnRaw = false, btnStable = false, btnLongFired = false, btnHoldWasOn = false;
 uint32_t btnRawAt = 0, btnPressAt = 0;
-bool     evShort = false, evLong = false;
+bool     evShort = false, evLong = false, evCancel = false;
+int      resetDigitShown = 0;
 
 // buzzer pattern: beeps of onMs, gaps of offMs
 int      buzLeft = 0;
@@ -227,22 +239,32 @@ void showToast(const char *s) {
   toastUntil = millis() + 2500;
 }
 
-// Debounced button: a press counts after 25 ms of steady level. Short press acts on release,
-// a hold fires once after 2 s.
+// Debounced button: a press counts after 25 ms of steady level. A short press (under 0.8 s) acts
+// on release. A hold fires once: after 5 s if the relay was off (reset), after 2 s if it was on (off).
 void buttonTick(uint32_t now) {
   bool raw = digitalRead(PIN_BTN) == LOW;
   if (raw != btnRaw) { btnRaw = raw; btnRawAt = now; }
   if (now - btnRawAt >= 25 && raw != btnStable) {
     btnStable = raw;
-    if (raw) { btnPressAt = now; btnLongFired = false; }
-    else if (!btnLongFired) evShort = true;
+    if (raw) { btnPressAt = now; btnLongFired = false; btnHoldWasOn = relayOn; }
+    else if (!btnLongFired) {
+      if (now - btnPressAt < SHORT_MAX_MS) evShort = true;
+      else if (!btnHoldWasOn) evCancel = true;
+    }
   }
-  if (btnStable && !btnLongFired && now - btnPressAt >= 2000) { btnLongFired = true; evLong = true; }
+  uint32_t need = btnHoldWasOn ? OFF_HOLD_MS : RESET_HOLD_MS;
+  if (btnStable && !btnLongFired && now - btnPressAt >= need) { btnLongFired = true; evLong = true; }
+}
+// ms the button has been held toward a reset, 0 if no reset hold is running
+uint32_t resetHoldMs(uint32_t now) {
+  if (!btnStable || btnLongFired || btnHoldWasOn) return 0;
+  uint32_t h = now - btnPressAt;
+  return h >= SHORT_MAX_MS ? h : 0;
 }
 
 void ledsUpdate(uint32_t now) {
   bool g = (st == ARMED);
-  bool r = (st == TRIPPED || st == WAITING) || (st == TRIPPING && (now / 200) % 2);
+  bool r = (st == TRIPPED || st == WAITING || st == LOCKED) || (st == TRIPPING && (now / 200) % 2);
   digitalWrite(PIN_LED_G, g ? HIGH : LOW);
   digitalWrite(PIN_LED_R, r ? HIGH : LOW);
 }
@@ -299,7 +321,12 @@ void recordTrip(Reason r, float val, uint32_t now) {
   tripCount++;
 }
 
-bool voltageInBand() { return V <= LIM.ovv * (1 - HYST) && V >= LIM.uvv * (1 + HYST); }
+// inside the voltage limits with a little margin, so a restart does not chatter at the edge
+bool voltageInBand() {
+  float h = min(HYST * LIM.vu, (LIM.vu - LIM.vl) * 0.25f);
+  return V <= LIM.vu - h && V >= LIM.vl + h;
+}
+bool latched(Reason r) { return r == R_OC || r == R_UC || r == R_OP || r == R_UP; }
 
 void updateState(uint32_t now) {
   if (vOverride && voltageInBand()) {
@@ -309,10 +336,14 @@ void updateState(uint32_t now) {
   Reason f = R_NONE;
   float fv = 0;
   bool vCheck = !vOverride;                        // an override ignores the voltage limits
-  if (vCheck && V > LIM.ovv) { f = R_OV; fv = V; }
-  else if (vCheck && V < LIM.uvv) { f = R_UV; fv = V; }
-  else if (relayOn && I > LIM.ocv) { f = R_OC; fv = I; }
-  else if (relayOn && fabs(P) > LIM.opp) { f = R_OP; fv = fabs(P); }
+  bool started = relayOn && now - relayOnAt >= START_GRACE_S * 1000;   // the load has had time to start
+  float pw = fabs(P);
+  if (vCheck && V > LIM.vu) { f = R_OV; fv = V; }
+  else if (vCheck && V < LIM.vl) { f = R_UV; fv = V; }
+  else if (relayOn && I > LIM.iu) { f = R_OC; fv = I; }
+  else if (relayOn && pw > LIM.pu) { f = R_OP; fv = pw; }
+  else if (started && LIM.il > 0 && I < LIM.il) { f = R_UC; fv = I; }
+  else if (started && LIM.pl > 0 && pw < LIM.pl) { f = R_UP; fv = pw; }
 
   switch (st) {
     case ARMED:
@@ -330,7 +361,7 @@ void updateState(uint32_t now) {
       }
       break;
     case TRIPPED:
-      if (now - stAt >= TRIPPED_SHOW_MS) { st = WAITING; stAt = now; }
+      if (now - stAt >= TRIPPED_SHOW_MS) { st = latched(waitReason) ? LOCKED : WAITING; stAt = now; }
       break;
     case WAITING:
       if (!voltageInBand()) stAt = now;            // the countdown runs only while the supply is good
@@ -342,7 +373,8 @@ void updateState(uint32_t now) {
       }
       break;
     case MANUAL_OFF:
-      break;                                       // stays off until turned on by hand
+    case LOCKED:
+      break;                                       // stays off until reset or turned on by hand
   }
 }
 
@@ -357,6 +389,15 @@ void manualOn(bool fromWeb) {
   beep(out ? 2 : 1, 60, 60);
   showToast(out ? "ON: voltage override" : (fromWeb ? "Relay on (web)" : "Relay on"));
   Serial.printf("[relay] on by hand%s\n", out ? ", supply out of range: OVERRIDE (voltage limits paused)" : "");
+}
+// Button reset: the relay closes and every limit (voltage too) is checked again straight away.
+void resetOn() {
+  setRelay(true);
+  st = ARMED;
+  vOverride = false;
+  beep(1, 120, 0);
+  showToast("Relay on, checking");
+  Serial.println("[relay] reset by button, checking all limits");
 }
 void manualOff() {
   setRelay(false);
@@ -374,7 +415,12 @@ void handleButton() {
   if (evLong) {
     evLong = false;
     if (relayOn) { manualOff(); showToast("Relay off (manual)"); }
-    else manualOn(false);
+    else resetOn();
+  }
+  if (evCancel) {
+    evCancel = false;
+    beep(2, 40, 40);
+    showToast("Reset cancelled");
   }
 }
 
@@ -383,8 +429,8 @@ void handleWeb() {
   if (limPending) {
     limPending = false;
     LIM = limNext;
-    prefs.putBytes("limits", &LIM, sizeof(LIM));
-    Serial.printf("[limits] OVV %.0f V  UVV %.0f V  OCV %.2f A  OPP %.0f W, saved\n", LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp);
+    prefs.putBytes("lim2", &LIM, sizeof(LIM));
+    printLimits("saved");
     showToast("Limits saved");
   }
   int cmd = relayCmd;
@@ -403,15 +449,23 @@ void handleWeb() {
   if (zeroReq) { zeroReq = false; zeroStart(); }
 }
 
-// Checks limits typed on the page. Returns nullptr if they are fine, otherwise the message to show.
-const char *checkLimits(const Limits &l) {
-  static char e[64];
-  if (!(l.ovv >= LIM_MIN.ovv && l.ovv <= LIM_MAX.ovv)) { snprintf(e, sizeof(e), "Over-voltage must be %.0f to %.0f V", LIM_MIN.ovv, LIM_MAX.ovv); return e; }
-  if (!(l.uvv >= LIM_MIN.uvv && l.uvv <= LIM_MAX.uvv)) { snprintf(e, sizeof(e), "Under-voltage must be %.0f to %.0f V", LIM_MIN.uvv, LIM_MAX.uvv); return e; }
-  if (l.ovv - l.uvv < 20) return "Over-voltage must be at least 20 V above under-voltage";
-  if (!(l.ocv >= LIM_MIN.ocv && l.ocv <= LIM_MAX.ocv)) { snprintf(e, sizeof(e), "Over-current must be %.1f to %.1f A", LIM_MIN.ocv, LIM_MAX.ocv); return e; }
-  if (!(l.opp >= LIM_MIN.opp && l.opp <= LIM_MAX.opp)) { snprintf(e, sizeof(e), "Over-power must be %.0f to %.0f W", LIM_MIN.opp, LIM_MAX.opp); return e; }
+// Checks limits typed on the page: any values, as long as LSL is below USL. Returns nullptr if
+// they are fine, otherwise the message to show.
+const char *checkPair(const char *name, float lsl, float usl, float maxSet, const char *unit) {
+  static char e[72];
+  if (!isfinite(lsl) || !isfinite(usl)) { snprintf(e, sizeof(e), "%s: fill in LSL and USL", name); return e; }
+  if (lsl < 0 || usl > maxSet) { snprintf(e, sizeof(e), "%s: limits must be 0 to %.0f %s", name, maxSet, unit); return e; }
+  if (!(lsl < usl)) { snprintf(e, sizeof(e), "%s: LSL must be below USL", name); return e; }
   return nullptr;
+}
+const char *checkLimits(const Limits &l) {
+  const char *e = checkPair("Voltage", l.vl, l.vu, V_MAXSET, "V");
+  if (!e) e = checkPair("Current", l.il, l.iu, I_MAXSET, "A");
+  if (!e) e = checkPair("Power", l.pl, l.pu, P_MAXSET, "W");
+  return e;
+}
+void printLimits(const char *what) {
+  Serial.printf("[limits] V %.1f..%.1f V  I %.2f..%.2f A  P %.0f..%.0f W  %s\n", LIM.vl, LIM.vu, LIM.il, LIM.iu, LIM.pl, LIM.pu, what);
 }
 
 // ---------------- calibration (web page and Serial) ----------------
@@ -560,11 +614,11 @@ void setupWeb() {
     char b[512];
     snprintf(b, sizeof(b),
              "{\"v\":%.1f,\"i\":%.3f,\"p\":%.1f,\"pf\":%.3f,\"st\":\"%s\",\"relay\":%d,\"left\":%d,\"why\":\"%s\","
-             "\"ovv\":%.0f,\"uvv\":%.0f,\"ocv\":%.2f,\"opp\":%.0f,\"td\":%.0f,\"rd\":%.0f,"
+             "\"vl\":%g,\"vu\":%g,\"il\":%g,\"iu\":%g,\"pl\":%g,\"pu\":%g,\"td\":%.0f,\"rd\":%.0f,\"gs\":%.0f,"
              "\"trips\":%d,\"up\":%lu,\"fw\":\"%s\",\"ovr\":%d}",
              V, I, fabs(P), PF, STATE_NAME[st], relayOn ? 1 : 0, countdownLeft(now),
-             (st == TRIPPED || st == WAITING || st == TRIPPING) ? REASON_LONG[st == TRIPPING ? pending : waitReason] : "",
-             LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp, TRIP_DELAY_S, RESTART_S,
+             (st == TRIPPED || st == WAITING || st == TRIPPING || st == LOCKED) ? REASON_LONG[st == TRIPPING ? pending : waitReason] : "",
+             LIM.vl, LIM.vu, LIM.il, LIM.iu, LIM.pl, LIM.pu, TRIP_DELAY_S, RESTART_S, START_GRACE_S,
              tripCount, (unsigned long)(now / 1000), FW_VERSION, vOverride ? 1 : 0);
     sendJson(req, b);
   });
@@ -596,17 +650,17 @@ void setupWeb() {
     int n = min(tripCount, TRIPS_KEPT);
     for (int k = 0; k < n; k++) {
       const Trip &t = trips[k];
-      bool amps = t.r == R_OC, watts = t.r == R_OP;
       if (k) r->print(',');
       r->printf("{\"why\":\"%s\",\"val\":%.2f,\"unit\":\"%s\",\"ago\":%lu}", REASON_LONG[t.r], t.val,
-                amps ? "A" : (watts ? "W" : "V"), (unsigned long)((now - t.at) / 1000));
+                REASON_UNIT[t.r], (unsigned long)((now - t.at) / 1000));
     }
     r->print("]}");
     req->send(r);
   });
 
   server.on("/limits", HTTP_POST, [](AsyncWebServerRequest *req) {
-    Limits l = { param(req, "ovv", LIM.ovv), param(req, "uvv", LIM.uvv), param(req, "ocv", LIM.ocv), param(req, "opp", LIM.opp) };
+    Limits l = { param(req, "vl", LIM.vl), param(req, "vu", LIM.vu), param(req, "il", LIM.il),
+                 param(req, "iu", LIM.iu), param(req, "pl", LIM.pl), param(req, "pu", LIM.pu) };
     const char *e = checkLimits(l);
     if (e) { sendErr(req, e); return; }
     limNext = l;
@@ -701,9 +755,15 @@ const char *ago(uint32_t ms, char *b, size_t n) {
   return b;
 }
 const char *tripValue(const Trip &t, char *b, size_t n) {
-  if (t.r == R_OC) snprintf(b, n, "%s %.1fA", REASON_SHORT[t.r], t.val);
-  else if (t.r == R_OP) snprintf(b, n, "%s %.0fW", REASON_SHORT[t.r], t.val);
-  else snprintf(b, n, "%s %.0fV", REASON_SHORT[t.r], t.val);
+  if (t.r == R_OC || t.r == R_UC) snprintf(b, n, "%s %.1fA", REASON_SHORT[t.r], t.val);
+  else snprintf(b, n, "%s %.0f%s", REASON_SHORT[t.r], t.val, REASON_UNIT[t.r]);
+  return b;
+}
+// short number for a limit: no decimals for big values, one or two for small ones
+const char *num(float x, char *b, size_t n) {
+  if (x >= 100 || x == (int)x) snprintf(b, n, "%.0f", x);
+  else if (x >= 10) snprintf(b, n, "%.1f", x);
+  else snprintf(b, n, "%.2g", x);
   return b;
 }
 void pageTitle(const char *t) {
@@ -736,52 +796,50 @@ void statusBar(uint32_t now) {
   } else if (st == MANUAL_OFF) {
     bg = OFFGREY;
     strcpy(s, "OFF (MANUAL)");
+  } else if (st == LOCKED) {
+    bg = BAD_DIM;
+    strcpy(s, "HOLD 5s RESET");
   }
   cv.fillRect(0, 0, W, 22, bg);
   textC(s, 16, (bg == BAD_DIM || bg == OFFGREY) ? FG : BG, &BaiM);
 }
-void meterV(int y) {
-  const float lo = LIM.uvv - 20, hi = LIM.ovv + 20;
+bool vOut() { return V > LIM.vu || V < LIM.vl; }
+bool iOut() { return I > LIM.iu || (LIM.il > 0 && relayOn && I < LIM.il); }
+bool pOut() { return fabs(P) > LIM.pu || (LIM.pl > 0 && relayOn && fabs(P) < LIM.pl); }
+// a bar with the LSL..USL window shaded, both limits marked and the value as a needle
+void meterWin(int y, float val, float lsl, float usl, bool bad) {
+  float span = usl - lsl, lo = max(0.0f, lsl - span * 0.25f), hi = usl + span * 0.25f;
   auto X = [&](float v) { return 4 + (int)((constrain(v, lo, hi) - lo) / (hi - lo) * (W - 8)); };
   cv.fillRect(4, y, W - 8, 6, CARD);
-  cv.fillRect(X(LIM.uvv), y, X(LIM.ovv) - X(LIM.uvv), 6, SAFE_BAND);
-  cv.drawFastVLine(X(LIM.uvv), y - 2, 10, BAD);
-  cv.drawFastVLine(X(LIM.ovv), y - 2, 10, BAD);
-  cv.fillRect(X(V) - 1, y - 3, 3, 12, (V > LIM.ovv || V < LIM.uvv) ? BAD : FG);
-  char b[8];
-  snprintf(b, sizeof(b), "%.0f", LIM.uvv); text(b, X(LIM.uvv) - textW(b) / 2, y + 10, MUTED);
-  snprintf(b, sizeof(b), "%.0f", LIM.ovv); text(b, X(LIM.ovv) - textW(b) / 2, y + 10, MUTED);
+  cv.fillRect(X(lsl), y, X(usl) - X(lsl), 6, SAFE_BAND);
+  if (lsl > 0) cv.drawFastVLine(X(lsl), y - 2, 10, BAD);
+  cv.drawFastVLine(X(usl), y - 2, 10, BAD);
+  cv.fillRect(X(val) - 1, y - 3, 3, 12, bad ? BAD : FG);
+  char b[10];
+  num(lsl, b, sizeof(b)); text(b, max(4, X(lsl) - textW(b) / 2), y + 10, MUTED);
+  num(usl, b, sizeof(b)); text(b, min(W - 4 - textW(b), X(usl) - textW(b) / 2), y + 10, MUTED);
 }
-void meterI(int y) {
-  const float hi = LIM.ocv * 1.25f;
-  auto X = [&](float v) { return 4 + (int)(constrain(v, 0.0f, hi) / hi * (W - 8)); };
-  cv.fillRect(4, y, W - 8, 6, CARD);
-  uint16_t c = I > LIM.ocv ? BAD : (I > LIM.ocv * 0.9f ? WARN : AMP);
-  if (I > 0) cv.fillRect(4, y, X(I) - 4, 6, c);
-  cv.drawFastVLine(X(LIM.ocv), y - 2, 10, BAD);
-  char b[8];
-  text("0", 4, y + 9, MUTED);
-  snprintf(b, sizeof(b), "%.1f", LIM.ocv); text(b, X(LIM.ocv) - textW(b) / 2, y + 9, MUTED);
-}
+void meterV(int y) { meterWin(y, V, LIM.vl, LIM.vu, vOut()); }
+void meterI(int y) { meterWin(y, I, LIM.il, LIM.iu, iOut()); }
 void drawHome(uint32_t now) {
   char b[32];
   statusBar(now);
   text("VOLTAGE", 4, 25, MUTED);
   snprintf(b, sizeof(b), "%.1f", V);
-  text(b, 4, 60, (V > LIM.ovv || V < LIM.uvv) ? BAD : VOLT, &BaiL);
+  text(b, 4, 60, vOut() ? BAD : VOLT, &BaiL);
   textR("V", W - 4, 60, FG2, &BaiM);
   meterV(65);
   text("CURRENT", 4, 88, MUTED);
   snprintf(b, sizeof(b), "%.2f", I);
-  text(b, 4, 122, I > LIM.ocv ? BAD : AMP, &BaiL);
+  text(b, 4, 122, iOut() ? BAD : AMP, &BaiL);
   textR("A", W - 4, 122, FG2, &BaiM);
   meterI(127);
   cv.drawFastHLine(0, 148, W, LINE);
-  if ((st == TRIPPED || st == WAITING) && waitReason != R_NONE && tripCount) {
+  if ((st == TRIPPED || st == WAITING || st == LOCKED) && waitReason != R_NONE && tripCount) {
     text(tripValue(trips[0], b, sizeof(b)), 4, 151, BAD);
   } else {
     snprintf(b, sizeof(b), "%.0f W", fabs(P));
-    text(b, 4, 151, fabs(P) > LIM.opp ? BAD : POW);
+    text(b, 4, 151, pOut() ? BAD : POW);
   }
   textR(relayOn ? "RELAY ON" : "OFF", W - 4, 151, relayOn ? OK_GREEN : BAD);
 }
@@ -810,12 +868,13 @@ void drawGraph() {
   pageTitle("LAST 60 s");
   snprintf(b, sizeof(b), "VOLTAGE  %.1f V", V);
   text(b, 4, 20, VOLT);
-  float vl[] = { LIM.ovv, LIM.uvv };
-  chart(30, 54, hv, LIM.uvv - 25, LIM.ovv + 25, VOLT, vl, 2);
+  float vs = LIM.vu - LIM.vl;
+  float vl[] = { LIM.vu, LIM.vl };
+  chart(30, 54, hv, max(0.0f, LIM.vl - vs * 0.3f), LIM.vu + vs * 0.3f, VOLT, vl, 2);
   snprintf(b, sizeof(b), "CURRENT  %.2f A", I);
   text(b, 4, 92, AMP);
-  float il[] = { LIM.ocv };
-  chart(102, 54, hi, 0, LIM.ocv * 1.3f, AMP, il, 1);
+  float il[] = { LIM.iu, LIM.il };
+  chart(102, 54, hi, 0, LIM.iu * 1.3f, AMP, il, LIM.il > 0 ? 2 : 1);
 }
 
 // ---------------- screen 3: Trips ----------------
@@ -826,9 +885,8 @@ void drawTrips(uint32_t now) {
   const Trip &t = trips[0];
   text("LAST TRIP", 4, 21, MUTED);
   text(REASON_LONG[t.r], 4, 46, BAD, &BaiM);
-  if (t.r == R_OC) snprintf(b, sizeof(b), "%.1f A for %.0f s", t.val, TRIP_DELAY_S);
-  else if (t.r == R_OP) snprintf(b, sizeof(b), "%.0f W for %.0f s", t.val, TRIP_DELAY_S);
-  else snprintf(b, sizeof(b), "%.0f V for %.0f s", t.val, TRIP_DELAY_S);
+  if (t.r == R_OC || t.r == R_UC) snprintf(b, sizeof(b), "%.2f A for %.0f s", t.val, TRIP_DELAY_S);
+  else snprintf(b, sizeof(b), "%.0f %s for %.0f s", t.val, REASON_UNIT[t.r], TRIP_DELAY_S);
   text(b, 4, 53, FG);
   text(ago(now - t.at, a, sizeof(a)), 4, 65, FG2);
   cv.drawFastHLine(0, 78, W, LINE);
@@ -851,17 +909,39 @@ void row(int y, const char *label, const char *val, uint16_t col) {
   textR(val, W - 4, y, col);
   cv.drawFastHLine(4, y + 12, W - 8, CARD);
 }
+void limitRow(int y, const char *name, float lsl, float usl, const char *unit, uint16_t col) {
+  char b[12];
+  text(name, 4, y, col);
+  num(lsl, b, sizeof(b)); textR(b, 76, y, FG);
+  num(usl, b, sizeof(b)); textR(b, 112, y, FG);
+  textR(unit, W - 4, y, MUTED);
+  cv.drawFastHLine(4, y + 12, W - 8, CARD);
+}
 void drawLimits() {
   char b[16];
   pageTitle("LIMITS");
-  snprintf(b, sizeof(b), "%.0f V", LIM.ovv);      row(22, "Over-voltage", b, VOLT);
-  snprintf(b, sizeof(b), "%.0f V", LIM.uvv);      row(40, "Under-voltage", b, VOLT);
-  snprintf(b, sizeof(b), "%.1f A", LIM.ocv);      row(58, "Over-current", b, AMP);
-  snprintf(b, sizeof(b), "%.0f W", LIM.opp);      row(76, "Over-power", b, POW);
-  snprintf(b, sizeof(b), "%.0f s", TRIP_DELAY_S); row(94, "Trip delay", b, FG);
-  snprintf(b, sizeof(b), "%.0f s", RESTART_S);    row(112, "Restart delay", b, FG);
-  row(130, "After a trip", "AUTO", FG);
+  text("LSL", 56, 21, MUTED); text("USL", 92, 21, MUTED);
+  limitRow(35, "Volt", LIM.vl, LIM.vu, "V", VOLT);
+  limitRow(52, "Amp", LIM.il, LIM.iu, "A", AMP);
+  limitRow(69, "Watt", LIM.pl, LIM.pu, "W", POW);
+  snprintf(b, sizeof(b), "%.0f s", TRIP_DELAY_S); row(88, "Trip delay", b, FG);
+  snprintf(b, sizeof(b), "%.0f s", RESTART_S);    row(105, "Volt restart", b, FG);
+  row(122, "A / W trip", "hold 5 s", FG);
   textC("Edit on the web page", 148, MUTED);
+}
+// full screen while the button is held toward a reset: RESETTING 5 4 3 2 1
+void drawResetHold(uint32_t held) {
+  int left = (int)((RESET_HOLD_MS - min(held, RESET_HOLD_MS) + 999) / 1000);
+  char b[4];
+  cv.fillScreen(BG);
+  textC("RESETTING", 34, BRAND, &BaiM);
+  snprintf(b, sizeof(b), "%d", max(1, left));
+  textC(b, 92, FG, &BaiL);
+  int w = (int)((W - 24) * (float)min(held, RESET_HOLD_MS) / RESET_HOLD_MS);
+  cv.drawRoundRect(12, 106, W - 24, 10, 3, LINE);
+  if (w > 2) cv.fillRoundRect(12, 106, w, 10, 3, BRAND);
+  textC("Keep holding", 126, FG2);
+  textC("let go to cancel", 140, MUTED);
 }
 
 // ---------------- screen 5: Connect ----------------
@@ -879,11 +959,20 @@ void drawConnect() {
   text(b, 4, 122, FG2);
   snprintf(b, sizeof(b), "Firmware %s", FW_VERSION);
   text(b, 4, 136, MUTED);
-  text("Hold 2 s: relay on / off", 4, 149, MUTED);
+  text("Hold: 5 s reset, 2 s off", 4, 149, MUTED);
 }
 
 // ---------------- frame ----------------
 void render(uint32_t now) {
+  uint32_t held = resetHoldMs(now);
+  if (held) {
+    int digit = (int)((RESET_HOLD_MS - min(held, RESET_HOLD_MS) + 999) / 1000);
+    if (digit != resetDigitShown) { resetDigitShown = digit; beep(1, 25, 0); }   // a tick per second
+    drawResetHold(held);
+    tft.drawRGBBitmap(0, 0, cv.getBuffer(), W, H);
+    return;
+  }
+  resetDigitShown = 0;
   cv.fillScreen(BG);
   switch (page) {
     case HOME:   drawHome(now);  break;
@@ -920,8 +1009,13 @@ void setup() {
   I_NOISE = prefs.getFloat("inoise", I_NOISE_DEF);
   I_SIGN = prefs.getInt("isign", I_SIGN_DEF) < 0 ? -1 : 1;
   Limits saved;
-  if (prefs.getBytesLength("limits") == sizeof(saved) && prefs.getBytes("limits", &saved, sizeof(saved)) == sizeof(saved)
+  OldLimits old;
+  if (prefs.getBytesLength("lim2") == sizeof(saved) && prefs.getBytes("lim2", &saved, sizeof(saved)) == sizeof(saved)
       && !checkLimits(saved)) LIM = saved;
+  else if (prefs.getBytesLength("limits") == sizeof(old) && prefs.getBytes("limits", &old, sizeof(old)) == sizeof(old)) {
+    Limits m = { old.uvv, old.ovv, 0, old.ocv, 0, old.opp };      // limits saved by firmware 0.2 / 0.3
+    if (!checkLimits(m)) LIM = m;
+  }
 
   SPI.begin(TFT_SCK, -1, TFT_SDA, TFT_CS);   // hardware SPI on our pins (the library then keeps them)
   tft.initR(INITR_BLACKTAB);
@@ -938,8 +1032,8 @@ void setup() {
   setupWeb();
   st = WAITING; stAt = millis(); waitReason = R_NONE;
   beep(1, 80, 0);
-  Serial.printf("Limits: OVV %.0f V, UVV %.0f V, OCV %.2f A, OPP %.0f W, trip delay %.0f s, restart %.0f s\n",
-                LIM.ovv, LIM.uvv, LIM.ocv, LIM.opp, TRIP_DELAY_S, RESTART_S);
+  printLimits("");
+  Serial.printf("Trip delay %.0f s, voltage restart %.0f s, current/power trips need a reset (hold 5 s)\n", TRIP_DELAY_S, RESTART_S);
   printCal();
   Serial.println("Calibration commands: V <volts>, I <amps>, O <volts>, Z, F, D, ?");
 }
